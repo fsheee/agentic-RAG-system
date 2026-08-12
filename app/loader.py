@@ -1,17 +1,22 @@
-from pypdf import PdfReader
+from pathlib import Path
+
+from langchain_community.document_loaders import PyPDFLoader
 
 
-def load_pdf(file_path: str) -> str:
-    reader = PdfReader(file_path)
+DATA_PATH = "knowledge_base"
 
-    text = ""
 
-    for page in reader.pages:
-        text += page.extract_text() or ""
+def load_documents():
+    """
+    Load all PDF files from the knowledge base.
+    """
 
-    return text
+    documents = []
 
-if __name__ == "__main__":
-     text = load_pdf("knowledge_base/hospital_info.pdf")
-print(text)
+    pdf_files = Path(DATA_PATH).glob("*.pdf")
 
+    for pdf in pdf_files:
+        loader = PyPDFLoader(str(pdf))
+        documents.extend(loader.load())
+
+    return documents
