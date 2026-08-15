@@ -16,12 +16,12 @@ def retrieve_documents(query: str, k: int = 3):
     return documents
 
 
-# if __name__ == "__main__":
-#     query = "What are the hospital visiting hours?"
+if __name__ == "__main__":
+    query = "What are the PROBATION PERIOD ?"
 
-#     documents = retrieve_documents(query)
+    documents = retrieve_documents(query)
 
-#     for i, document in enumerate(documents, 1):
-#         print(f"\n--- Result {i} ---")
-#         print(document.page_content)
-#         print("Metadata:", document.metadata)
+    for i, document in enumerate(documents, 1):
+        print(f"\n--- Result {i} ---")
+        print(document.page_content)
+        print("Metadata:", document.metadata)
