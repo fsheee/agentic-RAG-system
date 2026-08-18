@@ -52,6 +52,9 @@ Question ────────────────┘
 | `app/retriever.py` | Similarity search (top-3 by default) |
 | `app/llm.py` | Groq `ChatGroq` LLM (temperature 0) |
 | `app/rag_chain.py` | Composes retrieval + LLM prompt into an answer |
+| `app/prompt.py` | `ChatPromptTemplate` used by `rag_chain.py` for answer generation |
+| `app/config.py` | Central config: loads `.env` (API key, model names), HF offline-mode cache detection |
+| `app/ingest.py` | Runs the full ingestion pipeline (load → split → store in Qdrant) |
 
 ## Getting Started
 
