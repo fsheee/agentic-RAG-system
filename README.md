@@ -5,34 +5,25 @@ A Retrieval-Augmented Generation (RAG) agent that answers questions from a hospi
 ## Architecture
 
 ```
-                    KNOWLEDGE BASE
-                         │
-                         ▼
-              Loader (PDF / TXT)
-                         │
-                         ▼
-                      Splitter
-                         │
-                         ▼
-                     Embeddings
-                         │
-                         ▼
-                       Qdrant
-                         │
-                         ▼
-                      Retriever
-                         ▲
-                         │
-Question ────────────────┘
-                         │
-                         ▼
-                      Context
-                         │
-                         ▼
-                    LLM (Groq)
-                         │
-                         ▼
-                       Answer-
+PDF/TXT
+  ↓
+Loader
+  ↓
+Chunks
+  ↓
+Embeddings
+  ↓
+Qdrant
+  ↓
+Retriever ←── User Question
+  ↓
+Context
+  ↓
+Prompt
+  ↓
+Groq LLM
+  ↓
+Answer
 ```
 
 ## Pipeline
