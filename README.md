@@ -73,7 +73,7 @@ cp .env.example .env
 | Variable | Description | Default |
 | --- | --- | --- |
 | `GROQ_API_KEY` | Your Groq API key | — |
-| `MODEL_NAME` | Groq model to use | `llama-3.3-70b-versatile` |
+| `MODEL_NAME` | Groq model to use | `openai/gpt-oss-120b` |
 
 ### Add Knowledge
 
@@ -92,6 +92,14 @@ uv run python -m app.retriever
 ```
 
 ### Generate an Answer
+
+Run the interactive CLI:
+
+```bash
+uv run python main.py
+```
+
+Or call `generate_answer` directly:
 
 ```bash
 uv run python -c "from app.rag_chain import generate_answer; print(generate_answer('What is the probation period?'))"
