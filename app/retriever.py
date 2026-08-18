@@ -1,4 +1,4 @@
-from vectorstore import create_vector_store
+from .vectorstore import create_vector_store
 
 
 def retrieve_documents(query: str, k: int = 3):

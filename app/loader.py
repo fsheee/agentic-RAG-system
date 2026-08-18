@@ -24,6 +24,7 @@ def load_documents():
             documents.extend(loader.load())
 
     return documents
+
 # from pathlib import Path
 
 # from langchain_community.document_loaders import PyPDFLoader

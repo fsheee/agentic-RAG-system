@@ -32,7 +32,7 @@ Question ────────────────┘
                     LLM (Groq)
                          │
                          ▼
-                       Answer
+                       Answer-
 ```
 
 ## Pipeline

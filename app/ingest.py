@@ -1,6 +1,6 @@
-from loader import load_documents
-from splitter import split_documents
-from vectorstore import create_vector_store
+from .loader import load_documents
+from .splitter import split_documents
+from .vectorstore import create_vector_store
 
 
 def ingest_documents():

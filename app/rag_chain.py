@@ -1,30 +1,27 @@
-from llm import get_llm
-from retriever import retrieve_documents
+from .llm import get_llm
+from .prompt import RAG_PROMPT
+from .retriever import retrieve_documents
 
 
 def generate_answer(query: str) -> str:
+    # Retrieve relevant documents from Qdrant
     documents = retrieve_documents(query)
 
+    # Combine retrieved document chunks into context
     context = "\n\n".join(
         document.page_content
         for document in documents
     )
 
-    prompt = f"""
-You are a helpful hospital assistant.
+    # Fill the prompt template
+    prompt = RAG_PROMPT.invoke(
+        {
+            "context": context,
+            "input": query,
+        }
+    )
 
-Answer the user's question using only the information in the context.
-If the context does not contain the answer, say that you don't know.
-
-Context:
-{context}
-
-Question:
-{query}
-
-Answer:
-"""
-
+    # Generate answer using the LLM
     llm = get_llm()
     response = llm.invoke(prompt)
 
@@ -32,8 +29,8 @@ Answer:
 
 
 # if __name__ == "__main__":
-#     question = "What are the  PROBATION PERIOD?"
+#     question = "What is the probation period?"
 #     answer = generate_answer(question)
 
-#     print("Answer:")
+#     print("\nAnswer:")
 #     print(answer)
