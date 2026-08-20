@@ -110,6 +110,37 @@ Or call `generate_answer` directly:
 uv run python -c "from app.rag_chain import generate_answer; print(generate_answer('What is the probation period?'))"
 ```
 
+## Testing (TDD)
+
+The project is developed test-first with pytest. Tests live in `tests/` and exercise each module in isolation (external services like Qdrant and LLMs are mocked).
+
+### Run the suite
+
+```bash
+uv sync          # install dev dependencies (pytest)
+uv run pytest    # run all tests
+uv run pytest -q
+```
+
+### Test layout
+
+| File | Covers |
+| --- | --- |
+| `tests/test_loader.py` | PDF/TXT loading, unsupported files, UTF-8 |
+| `tests/test_splitter.py` | Chunk size, overlap, metadata preservation |
+| `tests/test_prompt.py` | Prompt rendering and answer-from-context rule |
+| `tests/test_rag_chain.py` | Answer generation, Gemini list-content handling |
+| `tests/test_llm.py` | Groq vs Gemini provider selection |
+| `tests/test_vectorstore.py` | Local/remote Qdrant, collection naming, auto-create |
+| `tests/test_embedding.py` | Embedding model config and error handling |
+
+### Workflow
+
+1. Write a failing test for the behavior you want.
+2. Run `uv run pytest tests/test_<module>.py` and watch it fail.
+3. Implement the feature until the test passes.
+4. Run the full suite to confirm nothing else broke.
+
 ## Tech Stack
 
 - **LangChain** — document loading, splitting, vector store, LLM wrappers
