@@ -2,16 +2,26 @@ from langchain_qdrant import QdrantVectorStore
 from qdrant_client import QdrantClient
 from qdrant_client.http import models
 
+from .config import QDRANT_COLLECTION_PREFIX, QDRANT_URL
 from .embedding import get_embeddings
 
 
-COLLECTION_NAME = "hospital_knowledge"
+BASE_COLLECTION_NAME = "hospital_knowledge"
+
+COLLECTION_NAME = (
+    f"{QDRANT_COLLECTION_PREFIX}_{BASE_COLLECTION_NAME}"
+    if QDRANT_COLLECTION_PREFIX
+    else BASE_COLLECTION_NAME
+)
 
 
 def create_vector_store():
     embeddings = get_embeddings()
 
-    client = QdrantClient(path="qdrant_data")
+    if QDRANT_URL:
+        client = QdrantClient(url=QDRANT_URL)
+    else:
+        client = QdrantClient(path="qdrant_data")
 
     if not client.collection_exists(COLLECTION_NAME):
         vector_size = len(embeddings.embed_query("test"))
@@ -29,27 +39,3 @@ def create_vector_store():
         collection_name=COLLECTION_NAME,
         embedding=embeddings,
     )
-
-
-
-# from langchain_qdrant import QdrantVectorStore
-# from qdrant_client import QdrantClient
-
-# from embedding import get_embeddings
-
-
-# COLLECTION_NAME = "hospital_knowledge"
-
-
-# def create_vector_store():
-#     embeddings = get_embeddings()
-
-#     client = QdrantClient(path="qdrant_data")
-
-#     vector_store = QdrantVectorStore(
-#         client=client,
-#         collection_name=COLLECTION_NAME,
-#         embedding=embeddings,
-#     )
-
-#     return vector_store

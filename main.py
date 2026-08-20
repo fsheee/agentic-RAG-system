@@ -2,7 +2,6 @@ from app.rag_chain import generate_answer
 import app.config
 
 
-
 def main():
     question = input("Ask a question: ")
 

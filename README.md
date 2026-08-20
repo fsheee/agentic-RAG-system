@@ -1,6 +1,6 @@
 # Agent-RAG
 
-A Retrieval-Augmented Generation (RAG) agent that answers questions from a hospital knowledge base using LangChain, Qdrant, and Groq's LLM.
+A Retrieval-Augmented Generation (RAG) agent that answers questions from a hospital knowledge base using LangChain, Qdrant, and Groq or Gemini LLMs.
 
 ## Architecture
 
@@ -39,9 +39,9 @@ Answer
 | `app/loader.py` | Loads PDF (`PyPDFLoader`) and TXT (`TextLoader`) files from `knowledge_base/` |
 | `app/splitter.py` | Recursive text splitter (chunk size 500, overlap 100) |
 | `app/embedding.py` | `sentence-transformers/all-MiniLM-L6-v2` embeddings |
-| `app/vectorstore.py` | Qdrant vector store (local mode), collection `hospital_knowledge`, cosine distance |
+| `app/vectorstore.py` | Qdrant vector store (remote via `QDRANT_URL` or local mode), collection `hospital_knowledge` (prefixed by `QDRANT_COLLECTION_PREFIX`), cosine distance |
 | `app/retriever.py` | Similarity search (top-3 by default) |
-| `app/llm.py` | Groq `ChatGroq` LLM (temperature 0) |
+| `app/llm.py` | Groq `ChatGroq` or Gemini `ChatGoogleGenerativeAI` (temperature 0) |
 | `app/rag_chain.py` | Composes retrieval + LLM prompt into an answer |
 | `app/prompt.py` | `ChatPromptTemplate` used by `rag_chain.py` for answer generation |
 | `app/config.py` | Central config: loads `.env` (API key, model names), HF offline-mode cache detection |
@@ -64,7 +64,7 @@ uv sync          # or: pip install -e .
 
 ### Configuration
 
-Copy `.env.example` to `.env` and set your Groq API key:
+Copy `.env.example` to `.env` and set your Groq and/or Google API keys:
 
 ```bash
 cp .env.example .env
@@ -74,6 +74,11 @@ cp .env.example .env
 | --- | --- | --- |
 | `GROQ_API_KEY` | Your Groq API key | — |
 | `MODEL_NAME` | Groq model to use | `openai/gpt-oss-120b` |
+| `GOOGLE_API_KEY` | Your Google/Gemini API key (switches LLM to Gemini when set) | — |
+| `GEMINI_MODEL` | Gemini model to use | `gemini-3.1-flash-lite` |
+| `EMBEDDING_MODEL` | HuggingFace embedding model | `sentence-transformers/all-MiniLM-L6-v2` |
+| `QDRANT_URL` | Qdrant server URL; empty = local mode (`qdrant_data/`) | — |
+| `QDRANT_COLLECTION_PREFIX` | Prefix for the Qdrant collection name | — |
 
 ### Add Knowledge
 
@@ -108,13 +113,14 @@ uv run python -c "from app.rag_chain import generate_answer; print(generate_answ
 ## Tech Stack
 
 - **LangChain** — document loading, splitting, vector store, LLM wrappers
-- **Qdrant** — vector database (embedded/local, stored in `qdrant_data/`)
-- **Groq** — hosted LLM inference
+- **Qdrant** — vector database (local mode stored in `qdrant_data/`, or a remote server via `QDRANT_URL`)
+- **Groq / Gemini** — hosted LLM inference
 - **HuggingFace sentence-transformers** — embeddings
 - **uv** — dependency management
 
 ## Notes
 
-- Qdrant runs in local embedded mode; data persists under `qdrant_data/` (git-ignored).
+- With `QDRANT_URL` unset, Qdrant runs in local embedded mode and data persists under `qdrant_data/` (git-ignored).
+- If `QDRANT_URL` is set (e.g. `http://localhost:6333`), a Qdrant server must be running, e.g. `docker run -p 6333:6333 qdrant/qdrant`.
 - The retriever is set to return the top 3 documents (`k=3`).
 - The model only answers from the retrieved context; if the context lacks an answer, it says it doesn't know.

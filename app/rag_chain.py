@@ -25,7 +25,17 @@ def generate_answer(query: str) -> str:
     llm = get_llm()
     response = llm.invoke(prompt)
 
-    return response.content
+    content = response.content
+
+    # Gemini returns content as a list of parts; join the text.
+    if isinstance(content, list):
+        return "".join(
+            part.get("text", "")
+            for part in content
+            if isinstance(part, dict)
+        ).strip()
+
+    return content
 
 
 # if __name__ == "__main__":
