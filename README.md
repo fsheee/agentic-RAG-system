@@ -122,6 +122,8 @@ uv run pytest    # run all tests
 uv run pytest -q
 ```
 
+**Current status:** 27 tests — all passing. Run the suite to verify before committing.
+
 ### Test layout
 
 | File | Covers |
