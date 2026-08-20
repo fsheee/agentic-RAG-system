@@ -18,3 +18,12 @@ dependencies = [
     "qdrant-client>=1.19.0",
     "sentence-transformers>=5.7.0",
 ]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
