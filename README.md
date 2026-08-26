@@ -23,14 +23,14 @@ Prompt
   ↓
 Groq LLM
   ↓
-Answer
+Answer + Sources
 ```
 
 ## Pipeline
 
 1. **Ingestion** (`app/ingest.py`) — Loads documents from `knowledge_base/`, splits them into chunks, and stores them in Qdrant.
 2. **Retrieval** (`app/retriever.py`) — Finds the top-k most relevant chunks using vector similarity search.
-3. **Generation** (`app/rag_chain.py`) — Feeds retrieved context to the LLM, which answers only from that context.
+3. **Generation** (`app/rag_chain.py`) — Feeds retrieved context to the LLM, which answers only from that context, then appends a list of the source documents used. Retrieval/LLM errors are caught and returned as a friendly message instead of a crash.
 
 ## Components
 
@@ -42,7 +42,7 @@ Answer
 | `app/vectorstore.py` | Qdrant vector store (remote via `QDRANT_URL` or local mode), collection `hospital_knowledge` (prefixed by `QDRANT_COLLECTION_PREFIX`), cosine distance |
 | `app/retriever.py` | Similarity search (top-3 by default) |
 | `app/llm.py` | Groq `ChatGroq` or Gemini `ChatGoogleGenerativeAI` (temperature 0) |
-| `app/rag_chain.py` | Composes retrieval + LLM prompt into an answer |
+| `app/rag_chain.py` | Composes retrieval + LLM prompt into an answer, appends de-duplicated source citations (file + page), and handles errors gracefully |
 | `app/prompt.py` | `ChatPromptTemplate` used by `rag_chain.py` for answer generation |
 | `app/config.py` | Central config: loads `.env` (API key, model names), HF offline-mode cache detection |
 | `app/ingest.py` | Runs the full ingestion pipeline (load → split → store in Qdrant) |
@@ -110,6 +110,22 @@ Or call `generate_answer` directly:
 uv run python -c "from app.rag_chain import generate_answer; print(generate_answer('What is the probation period?'))"
 ```
 
+### Answer sources (citations)
+
+Every answer ends with a **Sources** section listing the knowledge-base documents the answer was drawn from, including the page number for PDFs. This lets you trace each answer back to its original document and verify it. For example:
+
+```text
+Answer:
+ABC Healthcare Hospital
+
+Sources:
+- knowledge_base/hospital_info.pdf — page 1
+- knowledge_base/hr_po
+licy.txt
+```
+
+The citations are built by `generate_answer` (`app/rag_chain.py`) from the `metadata` of the retrieved chunks: it reads each chunk's `source` (file path) and `page`, converts the page to 1-based numbering, removes duplicates, and appends the list to the answer. If retrieval or the LLM call fails, `generate_answer` catches the error and returns a short apology instead of raising.
+
 ## Testing (TDD)
 
 The project is developed test-first with pytest. Tests live in `tests/` and exercise each module in isolation (external services like Qdrant and LLMs are mocked).
@@ -157,3 +173,4 @@ uv run pytest -q
 - If `QDRANT_URL` is set (e.g. `http://localhost:6333`), a Qdrant server must be running, e.g. `docker run -p 6333:6333 qdrant/qdrant`.
 - The retriever is set to return the top 3 documents (`k=3`).
 - The model only answers from the retrieved context; if the context lacks an answer, it says it doesn't know.
+- Each answer is followed by a **Sources** list (file, plus page number for PDFs) identifying the documents it used.
