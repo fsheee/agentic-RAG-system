@@ -44,3 +44,8 @@ builder.add_edge("retrieve", "generate")
 builder.add_edge("generate", END)
 
 graph = builder.compile()
+
+
+
+if __name__ == "__main__":
+    print(graph.get_graph().draw_ascii())
