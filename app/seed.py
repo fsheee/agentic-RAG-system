@@ -1,0 +1,62 @@
+"""Seed the database with sample doctors, schedules, and a patient.
+
+Run: uv run python -m app.seed
+"""
+
+from datetime import time
+
+from sqlmodel import Session
+
+from app.db import create_tables, engine
+from app.schema import Doctor, DoctorSchedule, Patient
+
+DOCTORS = [
+    ("Dr. Sarah Ahmed", "Cardiology"),
+    ("Dr. Bilal Raza", "Dermatology"),
+    ("Dr. Ayesha Siddiqui", "Pediatrics"),
+    ("Dr. Usman Tariq", "Orthopedics"),
+    ("Dr. Fatima Noor", "General Medicine"),
+]
+
+# day_of_week: 0 = Monday ... 6 = Sunday
+SCHEDULES = {
+    "Dr. Sarah Ahmed": [(0, 9, 13), (2, 14, 18), (4, 9, 13)],
+    "Dr. Bilal Raza": [(1, 10, 16), (3, 10, 16)],
+    "Dr. Ayesha Siddiqui": [(0, 8, 14), (1, 8, 14), (2, 8, 14), (3, 8, 14), (4, 8, 12)],
+    "Dr. Usman Tariq": [(2, 9, 17), (4, 9, 17), (5, 10, 14)],
+    "Dr. Fatima Noor": [(0, 9, 17), (1, 9, 17), (2, 9, 17), (3, 9, 17), (4, 9, 17)],
+}
+
+PATIENTS = [
+    ("Ali Khan", "03001234567"),
+]
+
+
+def seed():
+    create_tables()
+
+    with Session(engine) as session:
+        for name, specialization in DOCTORS:
+            doctor = Doctor(name=name, specialization=specialization)
+            session.add(doctor)
+            session.flush()  # assign doctor.id before building schedules
+
+            for day_of_week, start_hour, end_hour in SCHEDULES[name]:
+                session.add(
+                    DoctorSchedule(
+                        doctor_id=doctor.id,
+                        day_of_week=day_of_week,
+                        start_time=time(start_hour),
+                        end_time=time(end_hour),
+                    )
+                )
+
+        for name, phone in PATIENTS:
+            session.add(Patient(name=name, phone=phone))
+
+        session.commit()
+        print(f"Seeded {len(DOCTORS)} doctors, {sum(len(s) for s in SCHEDULES.values())} schedules, {len(PATIENTS)} patient(s).")
+
+
+if __name__ == "__main__":
+    seed()

@@ -42,4 +42,5 @@ User question:
     if route not in {"rag", "doctor", "booking"}:
         route = "rag"
 
+
     return {"route": route}
