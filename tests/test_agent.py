@@ -104,3 +104,18 @@ def test_route_question_falls_back_to_general(monkeypatch):
     monkeypatch.setattr(graph, "get_llm", lambda: FakeLLM())
 
     assert graph.route_question("anything") == "general"
+
+
+def test_general_route_refuses_out_of_scope_questions(monkeypatch):
+    """General route must not answer questions outside the hospital domain."""
+
+    def fake_invoke(self, prompt):
+        return type("R", (), {"content": prompt.to_string()})()
+
+    _patch(monkeypatch, "general")
+    monkeypatch.setattr(graph, "get_llm", lambda: type("L", (), {"invoke": fake_invoke})())
+
+    state = run_agent("What is the capital of France?")
+
+    assert "hospital" in state["answer"].lower()
+    assert "only" in state["answer"].lower() or "scope" in state["answer"].lower() or "can't" in state["answer"].lower()

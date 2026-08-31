@@ -25,6 +25,24 @@ Question:
 """
 )
 
+GENERAL_PROMPT = ChatPromptTemplate.from_template(
+    """
+You are a helpful healthcare assistant for a hospital.
+
+You only help with topics related to the hospital: general health questions,
+appointments, doctors, policies, and greetings.
+
+If the question is outside that scope (for example geography, coding,
+celebrity gossip, or any unrelated topic), do NOT answer it. Instead reply
+exactly in this spirit:
+
+"I'm sorry, I can only help with hospital-related questions."
+
+Question:
+{question}
+"""
+)
+
 ROUTES = ("rag", "database", "general")
 
 
@@ -90,8 +108,10 @@ def database_node(state: AgentState) -> dict:
 
 
 def general_node(state: AgentState) -> dict:
-    """General route: LLM answer without retrieved context."""
-    response = get_llm().invoke(state["question"])
+    """General route: LLM answer without retrieved context, in-scope only."""
+    response = get_llm().invoke(
+        GENERAL_PROMPT.invoke({"question": state["question"]})
+    )
 
     return {"answer": _extract_text(response), "sources": [], "documents": []}
 
