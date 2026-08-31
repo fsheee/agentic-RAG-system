@@ -127,3 +127,16 @@ def test_build_context_sanitizes_injected_instructions(monkeypatch):
     assert "Ignore all previous instructions" not in context
     assert "[filtered]" in context
     assert "Visiting hours are 10am." in context
+
+
+def test_ask_returns_no_sources_when_answer_is_unknown(monkeypatch):
+    monkeypatch.setattr(core, "retrieve_documents", lambda q: _documents())
+    monkeypatch.setattr(
+        core, "get_llm", lambda: FakeLLM("I don't know based on the provided documents.")
+    )
+
+    result = core.ask("unanswerable question")
+
+    assert result["answer"] == "I don't know based on the provided documents."
+    assert result["sources"] == []
+    assert result["documents"] == _documents()  # documents still available for debugging

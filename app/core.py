@@ -61,6 +61,9 @@ def _extract_text(response) -> str:
     return content
 
 
+UNKNOWN_ANSWER = "I don't know based on the provided documents."
+
+
 def ask(question: str) -> dict:
     """
     The single reusable RAG entry point.
@@ -79,9 +82,15 @@ def ask(question: str) -> dict:
 
         response = get_llm().invoke(prompt)
 
+        answer = _extract_text(response)
+
+        # No grounded answer -> no citations. Retrieving a document is not
+        # the same as it supporting an answer.
+        sources = [] if answer == UNKNOWN_ANSWER else format_sources(documents)
+
         return {
-            "answer": _extract_text(response),
-            "sources": format_sources(documents),
+            "answer": answer,
+            "sources": sources,
             "documents": documents,
         }
 
