@@ -1,0 +1,10 @@
+[
+  {"question": "What is the probation period?", "route": "rag"},
+  {"question": "What are the hospital visiting hours?", "route": "rag"},
+  {"question": "What does the HR policy say about annual leave?", "route": "rag"},
+  {"question": "Which doctors are available?", "route": "database"},
+  {"question": "Show me Dr. Sarah Ahmed's schedule.", "route": "database"},
+  {"question": "Can I book an appointment with a cardiologist?", "route": "database"},
+  {"question": "Hello, how are you?", "route": "general"},
+  {"question": "What is the capital of France?", "route": "general"}
+]

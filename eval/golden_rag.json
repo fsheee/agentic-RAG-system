@@ -1,0 +1,17 @@
+[
+  {
+    "question": "What is the probation period?",
+    "expected_source": "hr_policy.txt",
+    "answer_contains": ["probation", "month"]
+  },
+  {
+    "question": "What are the hospital visiting hours?",
+    "expected_source": "hospital_info.pdf",
+    "answer_contains": []
+  },
+  {
+    "question": "What is the hospital's emergency contact procedure?",
+    "expected_source": "hospital_info.pdf",
+    "answer_contains": []
+  }
+]
