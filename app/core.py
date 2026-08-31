@@ -1,3 +1,4 @@
+from app.guardrails import sanitize_context
 from app.llm import get_llm
 from app.prompt import RAG_PROMPT
 from app.retriever import retrieve_documents
@@ -7,14 +8,17 @@ def build_context(question: str) -> tuple[list, str]:
     """
     Retrieve relevant documents and join them into context.
 
-    Shared by every consumer (CLI, future API, LangGraph nodes)
-    so retrieval exists in exactly one place.
+    Shared by every consumer (CLI, API, LangGraph nodes) so retrieval exists
+    in exactly one place. Retrieved chunks are untrusted content, so the
+    joined context is sanitized before it is used in a prompt.
     """
     documents = retrieve_documents(question)
 
-    context = "\n\n".join(
-        document.page_content
-        for document in documents
+    context = sanitize_context(
+        "\n\n".join(
+            document.page_content
+            for document in documents
+        )
     )
 
     return documents, context
