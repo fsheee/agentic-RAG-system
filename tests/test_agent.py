@@ -45,21 +45,23 @@ def test_database_route_lists_doctors(monkeypatch):
     assert state["sources"] == []
 
 
-def test_general_route_uses_llm_directly(monkeypatch):
-    class FakeResponse:
-        content = "Hello there!"
-
-    _patch(monkeypatch, "general")
-    monkeypatch.setattr(
-        graph,
-        "get_llm",
-        lambda: type("FakeLLM", (), {"invoke": lambda self, p: FakeResponse()})(),
+def test_out_of_scope_questions_fall_back_to_rag(monkeypatch):
+    """No general route: off-scope questions go to RAG and get its
+    'I don't know based on the provided documents.' boundary answer."""
+    _patch(
+        monkeypatch,
+        "rag",
+        rag_result={
+            "answer": "I don't know based on the provided documents.",
+            "sources": [],
+            "documents": [],
+        },
     )
 
-    state = run_agent("Hello!")
+    state = run_agent("What is the capital of France?")
 
-    assert state["route"] == "general"
-    assert state["answer"] == "Hello there!"
+    assert state["route"] == "rag"
+    assert state["answer"] == "I don't know based on the provided documents."
 
 
 def test_guardrail_blocks_injection_question(monkeypatch):
@@ -96,26 +98,13 @@ def test_route_question_parses_llm_word(monkeypatch):
     assert graph.route_question("which doctors?") == "database"
 
 
-def test_route_question_falls_back_to_general(monkeypatch):
+def test_route_question_falls_back_to_rag(monkeypatch):
     class FakeLLM:
         def invoke(self, prompt):
             return type("R", (), {"content": "bananas"})()
 
     monkeypatch.setattr(graph, "get_llm", lambda: FakeLLM())
 
-    assert graph.route_question("anything") == "general"
+    assert graph.route_question("anything") == "rag"
 
 
-def test_general_route_refuses_out_of_scope_questions(monkeypatch):
-    """General route must not answer questions outside the hospital domain."""
-
-    def fake_invoke(self, prompt):
-        return type("R", (), {"content": prompt.to_string()})()
-
-    _patch(monkeypatch, "general")
-    monkeypatch.setattr(graph, "get_llm", lambda: type("L", (), {"invoke": fake_invoke})())
-
-    state = run_agent("What is the capital of France?")
-
-    assert "hospital" in state["answer"].lower()
-    assert "only" in state["answer"].lower() or "scope" in state["answer"].lower() or "can't" in state["answer"].lower()

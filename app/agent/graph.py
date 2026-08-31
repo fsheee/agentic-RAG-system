@@ -13,41 +13,25 @@ You are a router for a healthcare assistant.
 Classify the user's question into exactly one route:
 
 - rag: answerable from hospital documents, policies, HR rules, visiting hours,
-  procedures or other knowledge-base content.
+  procedures, general health questions, greetings, or anything else that is
+  not application data.
 - database: asks about doctors, their specializations, doctor schedules,
   appointments or other application records.
-- general: anything else (greetings, small talk, general questions).
 
-Reply with a single word: rag, database, or general.
-
-Question:
-{question}
-"""
-)
-
-GENERAL_PROMPT = ChatPromptTemplate.from_template(
-    """
-You are a helpful healthcare assistant for a hospital.
-
-You only help with topics related to the hospital: general health questions,
-appointments, doctors, policies, and greetings.
-
-If the question is outside that scope (for example geography, coding,
-celebrity gossip, or any unrelated topic), do NOT answer it. Instead reply
-exactly in this spirit:
-
-"I'm sorry, I can only help with hospital-related questions."
+Reply with a single word: rag or database.
 
 Question:
 {question}
 """
 )
 
-ROUTES = ("rag", "database", "general")
+ROUTES = ("rag", "database")
 
 
 def route_question(question: str) -> str:
-    """LLM-based routing. Falls back to 'general' on unexpected output."""
+    """LLM-based routing. Falls back to 'rag' on unexpected output; the RAG
+    prompt then answers off-scope questions with 'I don't know based on the
+    provided documents.'"""
     response = get_llm().invoke(ROUTER_PROMPT.invoke({"question": question}))
     answer = _extract_text(response).strip().lower()
 
@@ -55,7 +39,7 @@ def route_question(question: str) -> str:
         if route in answer:
             return route
 
-    return "general"
+    return "rag"
 
 
 def guardrail_node(state: AgentState) -> dict:
@@ -107,15 +91,6 @@ def database_node(state: AgentState) -> dict:
     }
 
 
-def general_node(state: AgentState) -> dict:
-    """General route: LLM answer without retrieved context, in-scope only."""
-    response = get_llm().invoke(
-        GENERAL_PROMPT.invoke({"question": state["question"]})
-    )
-
-    return {"answer": _extract_text(response), "sources": [], "documents": []}
-
-
 def validate_node(state: AgentState) -> dict:
     """Final check: an empty answer is a failure, not a success."""
     if state.get("error"):
@@ -134,7 +109,7 @@ def _route_from(state: AgentState) -> str:
     if state.get("error"):
         return "validate"
 
-    return state["route"] if state["route"] in ROUTES else "general"
+    return state["route"] if state["route"] in ROUTES else "rag"
 
 
 def build_graph():
@@ -144,23 +119,21 @@ def build_graph():
     graph.add_node("router", router_node)
     graph.add_node("rag", rag_node)
     graph.add_node("database", database_node)
-    graph.add_node("general", general_node)
     graph.add_node("validate", validate_node)
 
     graph.add_edge(START, "guardrail")
     graph.add_conditional_edges(
         "guardrail",
         _route_from,
-        {"validate": "validate", "rag": "router", "database": "router", "general": "router"},
+        {"validate": "validate", "rag": "router", "database": "router"},
     )
     graph.add_conditional_edges(
         "router",
         lambda state: state["route"],
-        {"rag": "rag", "database": "database", "general": "general"},
+        {"rag": "rag", "database": "database"},
     )
     graph.add_edge("rag", "validate")
     graph.add_edge("database", "validate")
-    graph.add_edge("general", "validate")
     graph.add_edge("validate", END)
 
     return graph.compile()

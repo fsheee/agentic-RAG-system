@@ -5,6 +5,6 @@
   {"question": "Which doctors are available?", "route": "database"},
   {"question": "Show me Dr. Sarah Ahmed's schedule.", "route": "database"},
   {"question": "Can I book an appointment with a cardiologist?", "route": "database"},
-  {"question": "Hello, how are you?", "route": "general"},
-  {"question": "What is the capital of France?", "route": "general"}
+  {"question": "Hello, how are you?", "route": "rag"},
+  {"question": "What is the capital of France?", "route": "rag"}
 ]
