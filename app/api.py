@@ -1,7 +1,7 @@
 from fastapi import FastAPI
 from pydantic import BaseModel, Field
 
-from app import core
+from app.agent import run_agent
 
 
 class AskRequest(BaseModel):
@@ -16,6 +16,7 @@ class Source(BaseModel):
 class AskResponse(BaseModel):
     answer: str
     sources: list[Source]
+    route: str | None = None
 
 
 app = FastAPI(title="Agentic RAG API")
@@ -23,10 +24,14 @@ app = FastAPI(title="Agentic RAG API")
 
 @app.post("/ask", response_model=AskResponse)
 def ask_question(request: AskRequest) -> AskResponse:
-    """Single RAG endpoint. All generation logic lives in core.ask()."""
-    result = core.ask(request.question)
+    """
+    Agent endpoint: guardrail -> router -> RAG/database/general -> validate.
+    The RAG route itself lives in core.ask() via the agent's rag tool.
+    """
+    state = run_agent(request.question)
 
     return AskResponse(
-        answer=result["answer"],
-        sources=[Source(**s) for s in result["sources"]],
+        answer=state["answer"],
+        sources=[Source(**s) for s in state["sources"]],
+        route=state["route"],
     )
