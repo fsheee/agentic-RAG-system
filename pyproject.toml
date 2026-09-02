@@ -15,6 +15,7 @@ dependencies = [
     "langchain-qdrant>=1.1.0",
     "langchain-text-splitters>=1.1.2",
     "langgraph>=1.2.11",
+    "langsmith>=0.10.18",
     "psycopg2-binary>=2.9.12",
     "pypdf>=6.15.0",
     "python-dotenv>=1.2.2",
@@ -32,6 +33,7 @@ dev = [
 [tool.pytest.ini_options]
 pythonpath = ["."]
 testpaths = ["tests"]
+
 markers = [
     "integration: requires live Qdrant, Neon, or an LLM API key",
 ]
