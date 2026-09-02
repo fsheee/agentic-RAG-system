@@ -19,6 +19,11 @@ QDRANT_URL = os.getenv("QDRANT_URL")
 
 QDRANT_COLLECTION_PREFIX = os.getenv("QDRANT_COLLECTION_PREFIX")
 
+# Minimum relevance score (LangChain-normalized, 0..1) for a retrieved
+# chunk to be used. Calibrated on the golden set + off-topic questions:
+# on-topic chunks score >= 0.70, off-topic <= 0.56.
+RETRIEVAL_THRESHOLD = float(os.getenv("RETRIEVAL_THRESHOLD", "0.65"))
+
 
 def _model_is_cached(model_name: str) -> bool:
     cache_root = os.environ.get(

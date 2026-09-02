@@ -16,7 +16,6 @@ class Source(BaseModel):
 class AskResponse(BaseModel):
     answer: str
     sources: list[Source]
-    route: str | None = None
 
 
 app = FastAPI(title="Agentic RAG API")
@@ -33,5 +32,4 @@ def ask_question(request: AskRequest) -> AskResponse:
     return AskResponse(
         answer=state["answer"],
         sources=[Source(**s) for s in state["sources"]],
-        route=state["route"],
     )

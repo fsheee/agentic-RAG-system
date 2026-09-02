@@ -19,7 +19,7 @@ def _client(monkeypatch, state):
     return TestClient(api.app)
 
 
-def test_ask_returns_answer_route_and_sources(monkeypatch):
+def test_ask_returns_answer_and_sources(monkeypatch):
     client = _client(monkeypatch, _agent_state())
 
     response = client.post("/ask", json={"question": "What are visiting hours?"})
@@ -28,7 +28,6 @@ def test_ask_returns_answer_route_and_sources(monkeypatch):
     assert response.json() == {
         "answer": "Visiting hours are 10am to 8pm.",
         "sources": [{"source": "hospital_policy.pdf", "page": 3}],
-        "route": "rag",
     }
 
 
@@ -57,7 +56,7 @@ def test_ask_returns_guardrail_rejection(monkeypatch):
 
     assert response.status_code == 200
     body = response.json()
-    assert body["route"] == "blocked"
+    assert "route" not in body  # internal routing detail stays out of the API
     assert "can't process" in body["answer"]
     assert body["sources"] == []
 

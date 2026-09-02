@@ -15,8 +15,11 @@ MIN_HIT_RATE = 0.7
 
 
 def _retrieval_enabled() -> bool:
+    """Probe with an on-topic question: the relevance threshold filters
+    off-topic probes (correctly) to nothing, which would look like
+    'retrieval unavailable'."""
     try:
-        return bool(retrieve_documents("test", k=1))
+        return bool(retrieve_documents(GOLDEN[0]["question"], k=1))
     except Exception:
         return False
 

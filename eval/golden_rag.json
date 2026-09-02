@@ -13,5 +13,10 @@
     "question": "What is the hospital's emergency contact procedure?",
     "expected_source": "hospital_info.pdf",
     "answer_contains": []
+  },
+  {
+    "question": "What should an employee do before leaving the job?",
+    "expected_source": "hr_policy.txt",
+    "answer_contains": ["notice", "clearance"]
   }
 ]
