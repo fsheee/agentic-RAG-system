@@ -24,6 +24,12 @@ QDRANT_COLLECTION_PREFIX = os.getenv("QDRANT_COLLECTION_PREFIX")
 # on-topic chunks score >= 0.70, off-topic <= 0.56.
 RETRIEVAL_THRESHOLD = float(os.getenv("RETRIEVAL_THRESHOLD", "0.65"))
 
+# Chunks scoring more than this far below the best match are dropped even
+# if they clear RETRIEVAL_THRESHOLD, so loosely-related chunks are not
+# cited as sources. Genuinely multi-source answers (chunks scoring close
+# together) still keep all their sources.
+SCORE_MARGIN = float(os.getenv("SCORE_MARGIN", "0.10"))
+
 
 def _model_is_cached(model_name: str) -> bool:
     cache_root = os.environ.get(

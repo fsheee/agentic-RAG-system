@@ -1,4 +1,4 @@
-from datetime import date, time
+from datetime import date, datetime, time
 
 from sqlmodel import Field, SQLModel
 
@@ -7,6 +7,7 @@ class Doctor(SQLModel, table=True):
     id: int | None = Field(default=None, primary_key=True)
     name: str
     specialization: str
+    consultation_fee: int | None = Field(default=None)  # PKR; null = not set
 
 
 class DoctorSchedule(SQLModel, table=True):
@@ -36,3 +37,4 @@ class Appointment(SQLModel, table=True):
     end_time: time
 
     status: str = "booked"
+    created_at: datetime | None = Field(default=None)  # when the booking was made

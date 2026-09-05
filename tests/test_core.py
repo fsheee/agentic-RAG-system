@@ -107,10 +107,10 @@ def test_format_sources_skips_documents_without_source():
 def test_build_context_joins_chunks(monkeypatch):
     monkeypatch.setattr(core, "retrieve_documents", lambda q: _documents())
 
-    documents, context = core.build_context("any question")
+    documents, blocks = core.build_context("any question")
 
     assert len(documents) == 2
-    assert context == "chunk one\n\nchunk two"
+    assert blocks == ["[1] chunk one", "[2] chunk two"]
 
 
 def test_build_context_sanitizes_injected_instructions(monkeypatch):
@@ -121,7 +121,9 @@ def test_build_context_sanitizes_injected_instructions(monkeypatch):
 
     monkeypatch.setattr(core, "retrieve_documents", lambda q: [poisoned])
 
-    documents, context = core.build_context("visiting hours")
+    documents, blocks = core.build_context("visiting hours")
+
+    context = "\n\n".join(blocks)
 
     assert documents == [poisoned]  # documents keep original content/metadata
     assert "Ignore all previous instructions" not in context
@@ -140,3 +142,27 @@ def test_ask_returns_no_sources_when_answer_is_unknown(monkeypatch):
     assert result["answer"] == "I don't know based on the provided documents."
     assert result["sources"] == []
     assert result["documents"] == _documents()  # documents still available for debugging
+
+
+def test_ask_cites_only_supported_documents(monkeypatch):
+    monkeypatch.setattr(core, "retrieve_documents", lambda q: _documents())
+    monkeypatch.setattr(
+        core, "get_llm", lambda: FakeLLM("chunk one's answer.\n\nSources: 1")
+    )
+
+    result = core.ask("any question")
+
+    assert result["answer"] == "chunk one's answer."
+    assert result["sources"] == [{"source": "hospital_policy.pdf", "page": 3}]
+
+
+def test_ask_falls_back_to_all_documents_without_sources_line(monkeypatch):
+    monkeypatch.setattr(core, "retrieve_documents", lambda q: _documents())
+    monkeypatch.setattr(core, "get_llm", lambda: FakeLLM("plain answer"))
+
+    result = core.ask("any question")
+
+    assert result["sources"] == [
+        {"source": "hospital_policy.pdf", "page": 3},
+        {"source": "hr_policy.txt", "page": None},
+    ]

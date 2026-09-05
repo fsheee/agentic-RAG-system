@@ -1,4 +1,4 @@
-from datetime import date, time
+from datetime import date, datetime, time
 
 from sqlmodel import Session, select
 
@@ -36,6 +36,7 @@ def book_appointment(
         start_time=start_time,
         end_time=end_time,
         status="booked",
+        created_at=datetime.now(),
     )
     session.add(appointment)
     session.commit()

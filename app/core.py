@@ -1,27 +1,31 @@
+import re
+
 from app.guardrails import sanitize_context
 from app.llm import get_llm
 from app.prompt import RAG_PROMPT
 from app.retriever import retrieve_documents
 
 
-def build_context(question: str) -> tuple[list, str]:
+def build_context(question: str) -> tuple[list, list[str]]:
     """
-    Retrieve relevant documents and join them into context.
+    Retrieve relevant documents and build numbered context blocks.
 
     Shared by every consumer (CLI, API, LangGraph nodes) so retrieval exists
-    in exactly one place. Retrieved chunks are untrusted content, so the
-    joined context is sanitized before it is used in a prompt.
+    in exactly one place. Retrieved chunks are untrusted content, so each
+    block is sanitized before it is used in a prompt.
+
+    Blocks are numbered so the LLM can cite the ones it actually used —
+    a retrieved-but-unused chunk (e.g. an HR handbook for a hospital
+    location question) must not appear as a source.
     """
     documents = retrieve_documents(question)
 
-    context = sanitize_context(
-        "\n\n".join(
-            document.page_content
-            for document in documents
-        )
-    )
+    blocks = [
+        f"[{i}] {sanitize_context(document.page_content)}"
+        for i, document in enumerate(documents, 1)
+    ]
 
-    return documents, context
+    return documents, blocks
 
 
 def format_sources(documents: list) -> list[dict]:
@@ -63,6 +67,26 @@ def _extract_text(response) -> str:
 
 UNKNOWN_ANSWER = "I don't know based on the provided documents."
 
+# Trailing "Sources: 1, 2" line the prompt asks the LLM to emit.
+SOURCES_LINE = re.compile(r"^sources?:\s*[\d\s,]+$", re.IGNORECASE)
+
+
+def _split_answer_and_sources(answer: str) -> tuple[str, list[int]]:
+    """
+    Split a trailing "Sources: <numbers>" line off the answer.
+
+    Returns (answer, cited block numbers). An answer with no such line
+    yields an empty list — the caller then falls back to citing all
+    retrieved documents.
+    """
+    lines = answer.strip().rsplit("\n", 1)
+
+    if len(lines) == 2 and SOURCES_LINE.fullmatch(lines[1].strip()):
+        numbers = re.findall(r"\d+", lines[1])
+        return lines[0].strip(), [int(n) for n in numbers]
+
+    return answer.strip(), []
+
 
 def ask(question: str) -> dict:
     """
@@ -71,22 +95,35 @@ def ask(question: str) -> dict:
     question -> {answer, sources, documents}
     """
     try:
-        documents, context = build_context(question)
+        documents, blocks = build_context(question)
 
         prompt = RAG_PROMPT.invoke(
             {
-                "context": context,
+                "context": "\n\n".join(blocks),
                 "input": question,
             }
         )
 
         response = get_llm().invoke(prompt)
 
-        answer = _extract_text(response)
+        answer, cited = _split_answer_and_sources(_extract_text(response))
 
         # No grounded answer -> no citations. Retrieving a document is not
         # the same as it supporting an answer.
-        sources = [] if answer == UNKNOWN_ANSWER else format_sources(documents)
+        if answer == UNKNOWN_ANSWER:
+            sources = []
+        else:
+            supported = [
+                documents[number - 1]
+                for number in cited
+                if 1 <= number <= len(documents)
+            ]
+            # Model omitted the Sources line -> keep the previous
+            # behavior of citing every retrieved document.
+            if not supported:
+                supported = documents
+
+            sources = format_sources(supported)
 
         return {
             "answer": answer,

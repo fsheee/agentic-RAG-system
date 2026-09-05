@@ -45,6 +45,26 @@ def test_database_route_lists_doctors(monkeypatch):
     assert state["sources"] == []
 
 
+def test_database_route_answers_fee_questions(monkeypatch):
+    _patch(monkeypatch, "database")
+    monkeypatch.setattr(
+        graph.db_tool,
+        "get_consultation_fees",
+        lambda: [
+            {"name": "Dr. A", "specialization": "Cardiology", "consultation_fee": 3000},
+            {"name": "Dr. B", "specialization": "Neurology", "consultation_fee": None},
+        ],
+    )
+
+    state = run_agent("What is the consultation fee?")
+
+    assert state["route"] == "database"
+    assert "Consultation fees:" in state["answer"]
+    assert "Dr. A (Cardiology): PKR 3000" in state["answer"]
+    assert "Dr. B (Neurology): fee not set" in state["answer"]
+    assert state["sources"] == []
+
+
 def test_out_of_scope_questions_fall_back_to_rag(monkeypatch):
     """No general route: off-scope questions go to RAG and get its
     'I don't know based on the provided documents.' boundary answer."""
@@ -86,6 +106,78 @@ def test_validate_replaces_empty_answer(monkeypatch):
 
     assert state["answer"] == "Sorry, I couldn't generate an answer right now."
     assert state["error"] == "Empty answer"
+
+
+def test_database_route_lists_appointments(monkeypatch):
+    _patch(monkeypatch, "database")
+    monkeypatch.setattr(
+        graph.booking_tool,
+        "list_appointments",
+        lambda: "Ali Khan's appointments:\n- #3: Dr. A on 2026-09-07",
+    )
+
+    state = run_agent("Show my appointments")
+
+    assert state["route"] == "database"
+    assert "#3" in state["answer"]
+
+
+def test_database_route_shows_doctor_details(monkeypatch):
+    _patch(monkeypatch, "database")
+    monkeypatch.setattr(
+        graph.db_tool,
+        "doctor_details",
+        lambda question: "Dr. A (Cardiology)\nConsultation fee: PKR 3000",
+    )
+
+    state = run_agent("What are the details of Dr. A?")
+
+    assert state["route"] == "database"
+    assert "PKR 3000" in state["answer"]
+
+
+def test_booking_route_handles_cancel(monkeypatch):
+    _patch(monkeypatch, "booking")
+    monkeypatch.setattr(
+        graph.booking_tool,
+        "handle_appointment_action",
+        lambda question: "Appointment #3 has been cancelled.",
+    )
+
+    state = run_agent("Cancel appointment 3")
+
+    assert state["route"] == "booking"
+    assert "cancelled" in state["answer"]
+
+
+def test_database_route_handles_actions_too(monkeypatch):
+    """Router misroutes a cancel to database: the action must still run."""
+    _patch(monkeypatch, "database")
+    monkeypatch.setattr(
+        graph.booking_tool,
+        "handle_appointment_action",
+        lambda question: "Appointment #3 has been cancelled.",
+    )
+
+    state = run_agent("Cancel appointment 3")
+
+    assert "cancelled" in state["answer"]
+
+
+def test_booking_route_uses_booking_tool(monkeypatch):
+    _patch(monkeypatch, "booking")
+    monkeypatch.setattr(
+        graph.booking_tool,
+        "run_booking",
+        lambda question: f"You'd like to book. On which date and time?",
+    )
+
+    state = run_agent("Book an appointment with Dr. Ayesha")
+
+    assert state["route"] == "booking"
+    assert "date and time" in state["answer"]
+    assert state["sources"] == []
+    assert state["error"] is None
 
 
 def test_route_question_parses_llm_word(monkeypatch):

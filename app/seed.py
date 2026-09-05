@@ -5,17 +5,18 @@ Run: uv run python -m app.seed
 
 from datetime import time
 
+from sqlalchemy import text
 from sqlmodel import Session, select
 
 from app.db import create_tables, engine
 from app.schema import Doctor, DoctorSchedule, Patient
 
 DOCTORS = [
-    ("Dr. Sarah Ahmed", "Cardiology"),
-    ("Dr. Bilal Raza", "Dermatology"),
-    ("Dr. Ayesha Siddiqui", "Pediatrics"),
-    ("Dr. Usman Tariq", "Orthopedics"),
-    ("Dr. Fatima Noor", "General Medicine"),
+    ("Dr. Sarah Ahmed", "Cardiology", 3000),
+    ("Dr. Bilal Raza", "Dermatology", 2500),
+    ("Dr. Ayesha Siddiqui", "Pediatrics", 2000),
+    ("Dr. Usman Tariq", "Orthopedics", 3500),
+    ("Dr. Fatima Noor", "General Medicine", 1500),
 ]
 
 # day_of_week: 0 = Monday ... 6 = Sunday
@@ -32,13 +33,27 @@ PATIENTS = [
 ]
 
 
+def _add_missing_columns():
+    """create_tables() only creates missing tables; it does not alter
+    existing ones, so new columns need an explicit migration."""
+    with Session(engine) as session:
+        session.execute(
+            text("ALTER TABLE doctor ADD COLUMN IF NOT EXISTS consultation_fee INTEGER")
+        )
+        session.execute(
+            text("ALTER TABLE appointment ADD COLUMN IF NOT EXISTS created_at TIMESTAMP")
+        )
+        session.commit()
+
+
 def seed():
     create_tables()
+    _add_missing_columns()
 
     with Session(engine) as session:
         # Idempotent: skip anything already present.
         existing_doctors = {
-            doctor.name for doctor in session.exec(select(Doctor)).all()
+            doctor.name: doctor for doctor in session.exec(select(Doctor)).all()
         }
         existing_patients = {
             patient.name for patient in session.exec(select(Patient)).all()
@@ -47,11 +62,19 @@ def seed():
         seeded_doctors = 0
         seeded_schedules = 0
 
-        for name, specialization in DOCTORS:
+        for name, specialization, fee in DOCTORS:
             if name in existing_doctors:
+                # Backfill the fee on doctors seeded before it existed.
+                if existing_doctors[name].consultation_fee is None:
+                    existing_doctors[name].consultation_fee = fee
+                    session.add(existing_doctors[name])
                 continue
 
-            doctor = Doctor(name=name, specialization=specialization)
+            doctor = Doctor(
+                name=name,
+                specialization=specialization,
+                consultation_fee=fee,
+            )
             session.add(doctor)
             session.flush()  # assign doctor.id before building schedules
 
