@@ -1,15 +1,18 @@
-"""Seed the database with sample doctors, schedules, and a patient.
+"""Seed the database with sample doctors, schedules, a patient, and the
+initial admin user (controlled setup).
 
 Run: uv run python -m app.seed
 """
 
+import os
 from datetime import time
 
 from sqlalchemy import text
 from sqlmodel import Session, select
 
+from app.auth import hash_password
 from app.db import create_tables, engine
-from app.schema import Doctor, DoctorSchedule, Patient
+from app.schema import Doctor, DoctorSchedule, Patient, Role, User
 
 DOCTORS = [
     ("Dr. Sarah Ahmed", "Cardiology", 3000),
@@ -46,9 +49,43 @@ def _add_missing_columns():
         session.commit()
 
 
+def _seed_admin():
+    """Create the initial admin from ADMIN_EMAIL/ADMIN_PASSWORD.
+
+    Admins are never created via the API; this is the controlled setup.
+    Idempotent: an existing admin with the same email is left untouched.
+    """
+    admin_email = os.getenv("ADMIN_EMAIL")
+    admin_password = os.getenv("ADMIN_PASSWORD")
+    if not admin_email or not admin_password:
+        print("ADMIN_EMAIL/ADMIN_PASSWORD not set; skipping admin seed.")
+        return
+
+    with Session(engine) as session:
+        existing = session.exec(
+            select(User).where(User.email == admin_email)
+        ).first()
+        if existing:
+            print(f"Admin already exists ({admin_email}); skipped.")
+            return
+
+        session.add(
+            User(
+                name="Admin",
+                email=admin_email,
+                password_hash=hash_password(admin_password),
+                role=Role.admin,
+                is_active=True,
+            )
+        )
+        session.commit()
+        print(f"Seeded admin user {admin_email}.")
+
+
 def seed():
     create_tables()
     _add_missing_columns()
+    _seed_admin()
 
     with Session(engine) as session:
         # Idempotent: skip anything already present.

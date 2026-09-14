@@ -2,6 +2,7 @@ from fastapi import FastAPI
 from pydantic import BaseModel, Field
 
 from app.agent import run_agent
+from app.auth_routes import router as auth_router
 
 
 class AskRequest(BaseModel):
@@ -19,6 +20,7 @@ class AskResponse(BaseModel):
 
 
 app = FastAPI(title="Agentic RAG API")
+app.include_router(auth_router)
 
 
 @app.post("/ask", response_model=AskResponse)

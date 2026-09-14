@@ -1,6 +1,24 @@
 from datetime import date, datetime, time
+from enum import Enum
 
 from sqlmodel import Field, SQLModel
+
+
+class Role(str, Enum):
+    admin = "admin"
+    hr = "hr"
+    employee = "employee"
+    doctor = "doctor"
+    patient = "patient"
+
+
+class User(SQLModel, table=True):
+    id: int | None = Field(default=None, primary_key=True)
+    name: str
+    email: str = Field(index=True, unique=True)
+    password_hash: str
+    role: Role = Field(default=Role.patient)
+    is_active: bool = Field(default=True)
 
 
 class Doctor(SQLModel, table=True):
