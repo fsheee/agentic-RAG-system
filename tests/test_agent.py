@@ -113,7 +113,7 @@ def test_database_route_lists_appointments(monkeypatch):
     monkeypatch.setattr(
         graph.booking_tool,
         "list_appointments",
-        lambda: "Ali Khan's appointments:\n- #3: Dr. A on 2026-09-07",
+        lambda user=None: "Ali Khan's appointments:\n- #3: Dr. A on 2026-09-07",
     )
 
     state = run_agent("Show my appointments")
@@ -141,7 +141,7 @@ def test_booking_route_handles_cancel(monkeypatch):
     monkeypatch.setattr(
         graph.booking_tool,
         "handle_appointment_action",
-        lambda question: "Appointment #3 has been cancelled.",
+        lambda question, user=None: "Appointment #3 has been cancelled.",
     )
 
     state = run_agent("Cancel appointment 3")
@@ -156,7 +156,7 @@ def test_database_route_handles_actions_too(monkeypatch):
     monkeypatch.setattr(
         graph.booking_tool,
         "handle_appointment_action",
-        lambda question: "Appointment #3 has been cancelled.",
+        lambda question, user=None: "Appointment #3 has been cancelled.",
     )
 
     state = run_agent("Cancel appointment 3")
@@ -169,7 +169,7 @@ def test_booking_route_uses_booking_tool(monkeypatch):
     monkeypatch.setattr(
         graph.booking_tool,
         "run_booking",
-        lambda question: f"You'd like to book. On which date and time?",
+        lambda question, user=None: f"You'd like to book. On which date and time?",
     )
 
     state = run_agent("Book an appointment with Dr. Ayesha")

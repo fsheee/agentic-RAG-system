@@ -17,7 +17,7 @@ from app.auth import (
     verify_password,
 )
 from app.db import get_session
-from app.schema import Role, User
+from app.schema import Patient, Role, User
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -61,6 +61,7 @@ class UserResponse(BaseModel):
     email: str
     role: Role
     is_active: bool
+
 
 
 def get_current_user(
@@ -120,6 +121,8 @@ def register(request: RegisterRequest, session: Session = Depends(get_session)):
         is_active=True,
     )
     session.add(user)
+    session.flush()  # assign user.id before linking the patient record
+    session.add(Patient(name=request.name, phone="", user_id=user.id))
     session.commit()
     session.refresh(user)
     return user
@@ -182,3 +185,4 @@ def create_user(
 @router.get("/me", response_model=UserResponse)
 def me(user: User = Depends(get_current_user)):
     return user
+

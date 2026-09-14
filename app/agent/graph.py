@@ -1,10 +1,19 @@
 from langchain_core.prompts import ChatPromptTemplate
 from langgraph.graph import END, START, StateGraph
+from sqlmodel import Session
 
 from app.agent.state import AgentState
 from app.agent.tools import booking_tool, db_tool, rag_tool
 from app.core import _extract_text, get_llm
+from app.db import engine
 from app.guardrails import check_user_input
+from app.schema import Role, User
+
+# Backend role policy (checked in Python, never by the LLM):
+# - RAG answers come from hospital documents: staff only.
+# - Booking and appointment data: patients (their own) and admins.
+RAG_ROLES = {Role.admin, Role.hr, Role.employee, Role.doctor}
+APPOINTMENT_ROLES = {Role.admin, Role.patient}
 
 ROUTER_PROMPT = ChatPromptTemplate.from_template(
     """
@@ -70,7 +79,19 @@ def router_node(state: AgentState) -> dict:
 
 
 def rag_node(state: AgentState) -> dict:
-    """RAG route: delegate to the shared Phase 1 core via the RAG tool."""
+    """RAG route: staff only. Delegate to the shared Phase 1 core."""
+    role = state.get("user_role")
+    if role is not None and role not in {r.value for r in RAG_ROLES}:
+        return {
+            "answer": (
+                "The knowledge base assistant is available to hospital "
+                "staff only. If you have a medical concern, please contact "
+                "the hospital directly."
+            ),
+            "sources": [],
+            "documents": [],
+        }
+
     result = rag_tool.search_knowledge_base(state["question"])
 
     return {
@@ -80,13 +101,47 @@ def rag_node(state: AgentState) -> dict:
     }
 
 
+def _appointment_user(state: AgentState) -> tuple[User | None, bool]:
+    """Load the requesting user for appointment scoping. Returns
+    (user, denied): user is None when the agent runs unauthenticated
+    (legacy/tests); denied is True when the role may not touch
+    appointments at all."""
+    user_id = state.get("user_id")
+    role = state.get("user_role")
+    if user_id is None or role is None:
+        return None, False
+    if Role(role) not in APPOINTMENT_ROLES:
+        return None, True
+
+    with Session(engine) as session:
+        user = session.get(User, user_id)
+    return user, False
+
+
+def _denied_answer() -> dict:
+    return {
+        "answer": (
+            "Appointments can only be viewed or managed by patients "
+            "(their own) or administrators."
+        ),
+        "sources": [],
+        "documents": [],
+    }
+
+
 def booking_node(state: AgentState) -> dict:
     """Booking route: cancel/reschedule actions, else the multi-step
     booking workflow (parse -> availability -> confirmation -> book)."""
-    action = booking_tool.handle_appointment_action(state["question"])
+    user, denied = _appointment_user(state)
+    if denied:
+        return _denied_answer()
 
-    answer = action if action is not None else booking_tool.run_booking(
-        state["question"]
+    action = booking_tool.handle_appointment_action(state["question"], user)
+
+    answer = (
+        action
+        if action is not None
+        else booking_tool.run_booking(state["question"], user)
     )
 
     return {"answer": answer, "sources": [], "documents": []}
@@ -105,12 +160,16 @@ def database_node(state: AgentState) -> dict:
 
     # The router sometimes sends cancel/reschedule here; the action tool
     # returns None for non-action questions.
-    action = booking_tool.handle_appointment_action(state["question"])
+    user, denied = _appointment_user(state)
+    if denied:
+        return _denied_answer()
+
+    action = booking_tool.handle_appointment_action(state["question"], user)
     if action is not None:
         return {"answer": action, "sources": []}
 
     if any(keyword in question for keyword in APPOINTMENT_LIST_KEYWORDS):
-        return {"answer": booking_tool.list_appointments(), "sources": []}
+        return {"answer": booking_tool.list_appointments(user), "sources": []}
 
     if any(word in question for word in FEE_KEYWORDS):
         return _fees_answer()
@@ -207,8 +266,12 @@ def build_graph():
     return graph.compile()
 
 
-def run_agent(question: str) -> AgentState:
-    """Invoke the compiled graph for a question and return the final state."""
+def run_agent(question: str, user: User | None = None) -> AgentState:
+    """Invoke the compiled graph for a question and return the final state.
+
+    `user` carries the authenticated identity (None keeps the legacy
+    unauthenticated behavior used by direct module calls and tests).
+    """
     graph = build_graph()
 
     initial: AgentState = {
@@ -218,6 +281,8 @@ def run_agent(question: str) -> AgentState:
         "sources": [],
         "documents": [],
         "error": None,
+        "user_id": user.id if user else None,
+        "user_role": user.role.value if user else None,
     }
 
     return graph.invoke(initial)

@@ -46,6 +46,9 @@ def _add_missing_columns():
         session.execute(
             text("ALTER TABLE appointment ADD COLUMN IF NOT EXISTS created_at TIMESTAMP")
         )
+        session.execute(
+            text("ALTER TABLE patient ADD COLUMN IF NOT EXISTS user_id INTEGER")
+        )
         session.commit()
 
 

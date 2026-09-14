@@ -28,7 +28,7 @@ from app.crud import (
     reschedule_appointment,
 )
 from app.db import engine
-from app.schema import Appointment, Patient
+from app.schema import Appointment, Patient, User
 
 DEFAULT_PATIENT_NAME = "Ali Khan"
 APPOINTMENT_MINUTES = 30
@@ -55,7 +55,16 @@ def reset_pending():
 _pending: dict = {}
 
 
-def _find_patient(session: Session) -> Patient | None:
+def _find_patient(session: Session, user: User | None = None) -> Patient | None:
+    """The patient record for the requesting user.
+
+    With a user: only their own linked Patient row (never another user's).
+    Without (legacy/direct use): the seeded demo patient.
+    """
+    if user is not None:
+        return session.exec(
+            select(Patient).where(Patient.user_id == user.id)
+        ).first()
     return session.exec(
         select(Patient).where(Patient.name == DEFAULT_PATIENT_NAME)
     ).first()
@@ -173,6 +182,7 @@ def _end_time(start: time) -> time:
 
 class BookingState(TypedDict):
     question: str
+    user: User | None
     doctor_id: int | None
     doctor_name: str
     specialization: str
@@ -276,14 +286,25 @@ def check_availability_node(state: BookingState) -> dict:
 def ask_confirmation_node(state: BookingState) -> dict:
     """Availability passed: ask the user to confirm before booking."""
     end = _end_time(state["start"])
+    who = _patient_display_name(state["user"])
     return {
         "answer": (
             f"Please confirm: appointment with {state['doctor_name']} "
             f"({state['specialization']}) on {state['day']} at "
-            f"{state['start']}-{end} for {DEFAULT_PATIENT_NAME}. "
+            f"{state['start']}-{end} for {who}. "
             "Reply 'yes' to confirm or 'no' to cancel."
         )
     }
+
+
+def _patient_display_name(user: User | None) -> str:
+    if user is None:
+        return DEFAULT_PATIENT_NAME
+    with Session(engine) as session:
+        patient = _find_patient(session, user)
+    if patient is not None:
+        return patient.name
+    return user.name
 
 
 def book_node(state: BookingState) -> dict:
@@ -291,12 +312,13 @@ def book_node(state: BookingState) -> dict:
     end = _end_time(state["start"])
 
     with Session(engine) as session:
-        patient = _find_patient(session)
+        patient = _find_patient(session, state["user"])
         if patient is None:
+            who = state["user"].name if state["user"] else DEFAULT_PATIENT_NAME
             return {
                 "answer": (
-                    f"No patient record found for {DEFAULT_PATIENT_NAME}. "
-                    "Please run the seed script first."
+                    f"No patient record is linked to your account, {who}. "
+                    "Please register as a patient first."
                 ),
                 "awaiting_confirmation": False,
             }
@@ -309,14 +331,15 @@ def book_node(state: BookingState) -> dict:
             start_time=state["start"],
             end_time=end,
         )
-
-    return {
-        "answer": (
+        message = (
             f"Appointment booked with {state['doctor_name']} "
             f"({state['specialization']}) on {appointment.appointment_date} at "
             f"{appointment.start_time}-{appointment.end_time} "
-            f"for {DEFAULT_PATIENT_NAME}."
-        ),
+            f"for {patient.name}."
+        )
+
+    return {
+        "answer": message,
         "awaiting_confirmation": False,
     }
 
@@ -357,7 +380,15 @@ def ask_slot_node(state: BookingState) -> dict:
 
 def _route_after_parse(state: BookingState) -> str:
     if state.get("confirmation") == "yes":
-        return "book"
+        # Only book when the slot is complete; a stale/partial pending
+        # state must not crash the booking.
+        if (
+            state.get("doctor_id") is not None
+            and state.get("day") is not None
+            and state.get("start") is not None
+        ):
+            return "book"
+        return "ask_slot"
     if state.get("confirmation") == "no":
         return "decline"
 
@@ -404,7 +435,7 @@ def build_booking_graph():
     return graph.compile()
 
 
-def run_booking(question: str) -> str:
+def run_booking(question: str, user: User | None = None) -> str:
     """Run one turn of the booking workflow, carrying pending state over
     from the previous turn. Returns the answer text."""
     global _pending
@@ -413,6 +444,7 @@ def run_booking(question: str) -> str:
 
     initial: BookingState = {
         "question": question,
+        "user": user,
         "doctor_id": _pending.get("doctor_id"),
         "doctor_name": _pending.get("doctor_name", ""),
         "specialization": _pending.get("specialization", ""),
@@ -444,26 +476,30 @@ def run_booking(question: str) -> str:
 # Appointment listing and cancel/reschedule
 # --------------------------------------------------------------------------
 
-def list_appointments() -> str:
-    """Answer text listing the default patient's appointments."""
+def list_appointments(user: User | None = None) -> str:
+    """Answer text listing the requesting user's appointments."""
     with Session(engine) as session:
-        lines = _appointment_lines(session)
+        lines = _appointment_lines(session, user)
 
     if lines is None:
+        if user is not None:
+            return "No patient record is linked to your account."
         return (
             f"No patient record found for {DEFAULT_PATIENT_NAME}. "
             "Please run the seed script first."
         )
 
+    who = _patient_display_name(user) if user else DEFAULT_PATIENT_NAME
+
     if not lines:
-        return f"{DEFAULT_PATIENT_NAME} has no appointments."
+        return f"{who} has no appointments."
 
-    return f"{DEFAULT_PATIENT_NAME}'s appointments:\n" + "\n".join(lines)
+    return f"{who}'s appointments:\n" + "\n".join(lines)
 
 
-def _appointment_lines(session: Session) -> list[str] | None:
-    """Formatted appointment list for the default patient (None if no patient)."""
-    patient = _find_patient(session)
+def _appointment_lines(session: Session, user: User | None = None) -> list[str] | None:
+    """Formatted appointment list for the requesting user (None if no patient)."""
+    patient = _find_patient(session, user)
     if patient is None:
         return None
 
@@ -485,7 +521,7 @@ RESCHEDULE_WORDS = ("reschedule", "postpone", "move")
 _APPOINTMENT_ID = re.compile(r"#?(\d+)\b")
 
 
-def handle_appointment_action(question: str) -> str | None:
+def handle_appointment_action(question: str, user: User | None = None) -> str | None:
     """Handle a cancel/reschedule request. Returns None when the question
     is not about canceling or rescheduling."""
     lowered = question.lower()
@@ -497,9 +533,11 @@ def handle_appointment_action(question: str) -> str | None:
         return None
 
     with Session(engine) as session:
-        patient = _find_patient(session)
+        patient = _find_patient(session, user)
 
         if patient is None:
+            if user is not None:
+                return "No patient record is linked to your account."
             return (
                 f"No patient record found for {DEFAULT_PATIENT_NAME}. "
                 "Please run the seed script first."

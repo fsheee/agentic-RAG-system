@@ -42,6 +42,9 @@ class Patient(SQLModel, table=True):
     id: int | None = Field(default=None, primary_key=True)
     name: str
     phone: str
+    # Links a Patient record to its login (nullable: seeded/demo patients
+    # and records created before auth may have none).
+    user_id: int | None = Field(default=None, foreign_key="user.id", unique=True)
 
 
 class Appointment(SQLModel, table=True):
