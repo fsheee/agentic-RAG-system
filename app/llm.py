@@ -22,8 +22,3 @@ def get_llm():
         api_key=GROQ_API_KEY,
         temperature=0,
     )
-
-    raise ValueError(
-        "No LLM API key configured. "
-        "Set GOOGLE_API_KEY or GROQ_API_KEY."
-    )

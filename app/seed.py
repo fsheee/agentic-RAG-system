@@ -11,7 +11,7 @@ from sqlalchemy import text
 from sqlmodel import Session, select
 
 from app.auth import hash_password
-from app.db import create_tables, engine
+from app.db import create_tables, get_engine
 from app.schema import Doctor, DoctorSchedule, Patient, Role, User
 
 DOCTORS = [
@@ -39,7 +39,7 @@ PATIENTS = [
 def _add_missing_columns():
     """create_tables() only creates missing tables; it does not alter
     existing ones, so new columns need an explicit migration."""
-    with Session(engine) as session:
+    with Session(get_engine()) as session:
         session.execute(
             text("ALTER TABLE doctor ADD COLUMN IF NOT EXISTS consultation_fee INTEGER")
         )
@@ -64,7 +64,7 @@ def _seed_admin():
         print("ADMIN_EMAIL/ADMIN_PASSWORD not set; skipping admin seed.")
         return
 
-    with Session(engine) as session:
+    with Session(get_engine()) as session:
         existing = session.exec(
             select(User).where(User.email == admin_email)
         ).first()
@@ -90,7 +90,7 @@ def seed():
     _add_missing_columns()
     _seed_admin()
 
-    with Session(engine) as session:
+    with Session(get_engine()) as session:
         # Idempotent: skip anything already present.
         existing_doctors = {
             doctor.name: doctor for doctor in session.exec(select(Doctor)).all()

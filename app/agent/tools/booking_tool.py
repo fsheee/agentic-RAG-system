@@ -27,7 +27,7 @@ from app.crud import (
     get_patient_appointments,
     reschedule_appointment,
 )
-from app.db import engine
+from app.db import get_engine
 from app.schema import Appointment, Patient, User
 
 DEFAULT_PATIENT_NAME = "Ali Khan"
@@ -210,7 +210,7 @@ def parse_node(state: BookingState) -> dict:
 
     updates: dict = {"confirmation": None}
 
-    with Session(engine) as session:
+    with Session(get_engine()) as session:
         doctors = get_doctors(session)
         doctor = _find_doctor(question, doctors)
 
@@ -239,7 +239,7 @@ def check_availability_node(state: BookingState) -> dict:
     start = state["start"]
     end = _end_time(start)
 
-    with Session(engine) as session:
+    with Session(get_engine()) as session:
         schedule = get_doctor_schedule(session, state["doctor_id"])
         on_day = [
             slot
@@ -300,7 +300,7 @@ def ask_confirmation_node(state: BookingState) -> dict:
 def _patient_display_name(user: User | None) -> str:
     if user is None:
         return DEFAULT_PATIENT_NAME
-    with Session(engine) as session:
+    with Session(get_engine()) as session:
         patient = _find_patient(session, user)
     if patient is not None:
         return patient.name
@@ -311,7 +311,7 @@ def book_node(state: BookingState) -> dict:
     """User confirmed: create the appointment now."""
     end = _end_time(state["start"])
 
-    with Session(engine) as session:
+    with Session(get_engine()) as session:
         patient = _find_patient(session, state["user"])
         if patient is None:
             who = state["user"].name if state["user"] else DEFAULT_PATIENT_NAME
@@ -319,6 +319,22 @@ def book_node(state: BookingState) -> dict:
                 "answer": (
                     f"No patient record is linked to your account, {who}. "
                     "Please register as a patient first."
+                ),
+                "awaiting_confirmation": False,
+            }
+
+        # Re-check at booking time: the availability check ran an earlier
+        # turn ago, and the same slot may have been taken (or booked twice)
+        # since then.
+        conflict = find_conflicting_appointment(
+            session, state["doctor_id"], state["day"], state["start"], end
+        )
+        if conflict is not None:
+            return {
+                "answer": (
+                    f"Sorry, {state['doctor_name']} already has an appointment "
+                    f"at {conflict.start_time} on {state['day']}. "
+                    "Please pick another time."
                 ),
                 "awaiting_confirmation": False,
             }
@@ -358,7 +374,7 @@ def unavailable_node(state: BookingState) -> dict:
 
 
 def ask_doctor_node(state: BookingState) -> dict:
-    with Session(engine) as session:
+    with Session(get_engine()) as session:
         doctors = get_doctors(session)
 
     if not doctors:
@@ -478,7 +494,7 @@ def run_booking(question: str, user: User | None = None) -> str:
 
 def list_appointments(user: User | None = None) -> str:
     """Answer text listing the requesting user's appointments."""
-    with Session(engine) as session:
+    with Session(get_engine()) as session:
         lines = _appointment_lines(session, user)
 
     if lines is None:
@@ -532,7 +548,7 @@ def handle_appointment_action(question: str, user: User | None = None) -> str | 
     if not (wants_cancel or wants_reschedule):
         return None
 
-    with Session(engine) as session:
+    with Session(get_engine()) as session:
         patient = _find_patient(session, user)
 
         if patient is None:

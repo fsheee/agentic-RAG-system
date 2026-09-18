@@ -5,7 +5,7 @@ from sqlmodel import Session
 from app.agent.state import AgentState
 from app.agent.tools import booking_tool, db_tool, rag_tool
 from app.core import _extract_text, get_llm
-from app.db import engine
+from app.db import get_engine
 from app.guardrails import check_user_input
 from app.schema import Role, User
 
@@ -113,7 +113,7 @@ def _appointment_user(state: AgentState) -> tuple[User | None, bool]:
     if Role(role) not in APPOINTMENT_ROLES:
         return None, True
 
-    with Session(engine) as session:
+    with Session(get_engine()) as session:
         user = session.get(User, user_id)
     return user, False
 

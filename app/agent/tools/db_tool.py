@@ -1,7 +1,7 @@
 from sqlmodel import Session
 
 from app.crud import get_doctor_schedule, get_doctors, get_patient_appointments
-from app.db import engine
+from app.db import get_engine
 
 
 def _serialize(doctor) -> dict:
@@ -35,13 +35,13 @@ def _serialize_appointment(appointment) -> dict:
 
 def list_doctors() -> list[dict]:
     """All registered doctors (name + specialization + fee)."""
-    with Session(engine) as session:
+    with Session(get_engine()) as session:
         return [_serialize(doctor) for doctor in get_doctors(session)]
 
 
 def get_consultation_fees(doctor_id: int | None = None) -> list[dict]:
     """Consultation fees (PKR). One doctor by id, or all when omitted."""
-    with Session(engine) as session:
+    with Session(get_engine()) as session:
         doctors = get_doctors(session)
         if doctor_id is not None:
             doctors = [doctor for doctor in doctors if doctor.id == doctor_id]
@@ -57,13 +57,13 @@ def get_consultation_fees(doctor_id: int | None = None) -> list[dict]:
 
 def get_schedule(doctor_id: int) -> list[dict]:
     """Weekly schedule slots for one doctor."""
-    with Session(engine) as session:
+    with Session(get_engine()) as session:
         return [_serialize_slot(slot) for slot in get_doctor_schedule(session, doctor_id)]
 
 
 def get_appointments(patient_id: int) -> list[dict]:
     """All appointments for one patient."""
-    with Session(engine) as session:
+    with Session(get_engine()) as session:
         return [
             _serialize_appointment(appointment)
             for appointment in get_patient_appointments(session, patient_id)
@@ -76,7 +76,7 @@ _DAY_NAMES = ("Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"
 def doctor_details(question: str) -> str | None:
     """Details (specialization, fee, weekly schedule) for one doctor
     mentioned by name in the question. None when no doctor is mentioned."""
-    with Session(engine) as session:
+    with Session(get_engine()) as session:
         doctors = get_doctors(session)
 
     text = question.lower().replace("dr.", " ").replace("dr", " ")
