@@ -1,12 +1,52 @@
+from qdrant_client.http import models
+
 from .config import RETRIEVAL_THRESHOLD, SCORE_MARGIN
 from .vectorstore import create_vector_store
 
 
-def retrieve_documents(query: str, k: int = 3, min_relevance: float | None = None):
+def _access_filter(access: set[str] | None) -> models.Filter | None:
+    """
+    Qdrant payload filter restricting results to the given access tiers.
+
+    The tier is stored under the document metadata, which langchain_qdrant
+    nests under the payload's "metadata" key, hence the dotted path.
+
+    Note the `is None` test rather than a truthiness test: an empty set is
+    falsy but must mean "match nothing", the opposite of None ("no filter").
+    """
+    if access is None:
+        return None
+
+    return models.Filter(
+        must=[
+            models.FieldCondition(
+                key="metadata.access",
+                match=models.MatchAny(any=sorted(access)),
+            )
+        ]
+    )
+
+
+def retrieve_documents(
+    query: str,
+    k: int = 3,
+    min_relevance: float | None = None,
+    access: set[str] | None = None,
+):
     """
     Retrieve the most relevant documents from Qdrant.
 
-    Two filters drop chunks that would produce false citations:
+    `access` is the set of access tiers the caller may read (see
+    app/access.py). Chunks outside those tiers are filtered out by Qdrant
+    itself, so they are never candidates, never reach the prompt and can
+    never be cited.
+
+    `access=None` disables filtering and is reserved for non-HTTP callers
+    that have no role: the CLI, the golden eval, and the rag_chain
+    compatibility shim. Callers serving a request must always pass a set
+    derived from the caller's role.
+
+    Two further filters drop chunks that would produce false citations:
 
     1. Absolute: chunks below RETRIEVAL_THRESHOLD never reach the LLM.
     2. Relative: chunks scoring far below the best match are dropped even
@@ -19,7 +59,11 @@ def retrieve_documents(query: str, k: int = 3, min_relevance: float | None = Non
 
     vector_store = create_vector_store()
 
-    scored = vector_store.similarity_search_with_relevance_scores(query, k=k)
+    scored = vector_store.similarity_search_with_relevance_scores(
+        query,
+        k=k,
+        filter=_access_filter(access),
+    )
 
     scored = [
         (document, score)

@@ -32,7 +32,7 @@ def _documents():
 
 
 def test_ask_returns_answer_sources_documents(monkeypatch):
-    monkeypatch.setattr(core, "retrieve_documents", lambda q: _documents())
+    monkeypatch.setattr(core, "retrieve_documents", lambda q, **kwargs: _documents())
     monkeypatch.setattr(core, "get_llm", lambda: FakeLLM("plain answer"))
 
     result = core.ask("any question")
@@ -46,7 +46,7 @@ def test_ask_returns_answer_sources_documents(monkeypatch):
 
 
 def test_ask_joins_gemini_list_content(monkeypatch):
-    monkeypatch.setattr(core, "retrieve_documents", lambda q: _documents())
+    monkeypatch.setattr(core, "retrieve_documents", lambda q, **kwargs: _documents())
     monkeypatch.setattr(
         core,
         "get_llm",
@@ -59,7 +59,7 @@ def test_ask_joins_gemini_list_content(monkeypatch):
 def test_ask_passes_context_and_question_to_prompt(monkeypatch):
     llm = FakeLLM("done")
 
-    monkeypatch.setattr(core, "retrieve_documents", lambda q: _documents())
+    monkeypatch.setattr(core, "retrieve_documents", lambda q, **kwargs: _documents())
     monkeypatch.setattr(core, "get_llm", lambda: llm)
 
     core.ask("my question")
@@ -71,7 +71,7 @@ def test_ask_passes_context_and_question_to_prompt(monkeypatch):
 
 
 def test_ask_returns_friendly_error_on_failure(monkeypatch):
-    def boom(query):
+    def boom(query, **kwargs):
         raise RuntimeError("qdrant down")
 
     monkeypatch.setattr(core, "retrieve_documents", boom)
@@ -105,12 +105,58 @@ def test_format_sources_skips_documents_without_source():
 
 
 def test_build_context_joins_chunks(monkeypatch):
-    monkeypatch.setattr(core, "retrieve_documents", lambda q: _documents())
+    monkeypatch.setattr(core, "retrieve_documents", lambda q, **kwargs: _documents())
 
     documents, blocks = core.build_context("any question")
 
     assert len(documents) == 2
     assert blocks == ["[1] chunk one", "[2] chunk two"]
+
+
+def test_ask_forwards_access_tiers_to_retrieval(monkeypatch):
+    """The access tiers must reach the retriever, or the filter is inert."""
+    seen = {}
+
+    def capture(query, **kwargs):
+        seen.update(kwargs)
+        return _documents()
+
+    monkeypatch.setattr(core, "retrieve_documents", capture)
+    monkeypatch.setattr(core, "get_llm", lambda: FakeLLM("answer"))
+
+    core.ask("any question", access={"public"})
+
+    assert seen["access"] == {"public"}
+
+
+def test_build_context_forwards_access_tiers(monkeypatch):
+    seen = {}
+
+    def capture(query, **kwargs):
+        seen.update(kwargs)
+        return _documents()
+
+    monkeypatch.setattr(core, "retrieve_documents", capture)
+
+    core.build_context("any question", access={"public", "staff"})
+
+    assert seen["access"] == {"public", "staff"}
+
+
+def test_ask_defaults_to_no_access_restriction(monkeypatch):
+    """access=None is the documented non-HTTP default (CLI, eval, rag_chain)."""
+    seen = {}
+
+    def capture(query, **kwargs):
+        seen.update(kwargs)
+        return _documents()
+
+    monkeypatch.setattr(core, "retrieve_documents", capture)
+    monkeypatch.setattr(core, "get_llm", lambda: FakeLLM("answer"))
+
+    core.ask("any question")
+
+    assert seen["access"] is None
 
 
 def test_build_context_sanitizes_injected_instructions(monkeypatch):
@@ -119,7 +165,7 @@ def test_build_context_sanitizes_injected_instructions(monkeypatch):
         metadata={"source": "hospital_policy.pdf", "page": 0},
     )
 
-    monkeypatch.setattr(core, "retrieve_documents", lambda q: [poisoned])
+    monkeypatch.setattr(core, "retrieve_documents", lambda q, **kwargs: [poisoned])
 
     documents, blocks = core.build_context("visiting hours")
 
@@ -132,7 +178,7 @@ def test_build_context_sanitizes_injected_instructions(monkeypatch):
 
 
 def test_ask_returns_no_sources_when_answer_is_unknown(monkeypatch):
-    monkeypatch.setattr(core, "retrieve_documents", lambda q: _documents())
+    monkeypatch.setattr(core, "retrieve_documents", lambda q, **kwargs: _documents())
     monkeypatch.setattr(
         core, "get_llm", lambda: FakeLLM("I don't know based on the provided documents.")
     )
@@ -145,7 +191,7 @@ def test_ask_returns_no_sources_when_answer_is_unknown(monkeypatch):
 
 
 def test_ask_cites_only_supported_documents(monkeypatch):
-    monkeypatch.setattr(core, "retrieve_documents", lambda q: _documents())
+    monkeypatch.setattr(core, "retrieve_documents", lambda q, **kwargs: _documents())
     monkeypatch.setattr(
         core, "get_llm", lambda: FakeLLM("chunk one's answer.\n\nSources: 1")
     )
@@ -157,7 +203,7 @@ def test_ask_cites_only_supported_documents(monkeypatch):
 
 
 def test_ask_falls_back_to_all_documents_without_sources_line(monkeypatch):
-    monkeypatch.setattr(core, "retrieve_documents", lambda q: _documents())
+    monkeypatch.setattr(core, "retrieve_documents", lambda q, **kwargs: _documents())
     monkeypatch.setattr(core, "get_llm", lambda: FakeLLM("plain answer"))
 
     result = core.ask("any question")

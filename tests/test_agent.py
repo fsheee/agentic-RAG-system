@@ -1,4 +1,38 @@
+import pytest
+from sqlalchemy.pool import StaticPool
+from sqlmodel import SQLModel, create_engine
+
 from app.agent import graph, run_agent
+from app.schema import Role, User
+
+
+def _user(role=Role.patient, user_id=1):
+    return User(
+        id=user_id,
+        name="Test User",
+        email="user@example.com",
+        password_hash="x",
+        role=role,
+        is_active=True,
+    )
+
+
+@pytest.fixture
+def sqlite_engine(monkeypatch):
+    """In-memory DB so the appointment gate's user lookup skips Neon.
+
+    _appointment_user opens a session off app.db.get_engine() directly
+    rather than going through the get_session dependency.
+    """
+    engine = create_engine(
+        "sqlite://",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    SQLModel.metadata.create_all(engine)
+    monkeypatch.setattr(graph, "get_engine", lambda: engine)
+    yield engine
+    engine.dispose()
 
 
 def _fake_rag_result():
@@ -12,7 +46,9 @@ def _fake_rag_result():
 def _patch(monkeypatch, route, rag_result=_fake_rag_result(), doctors=None):
     monkeypatch.setattr(graph, "route_question", lambda question: route)
     monkeypatch.setattr(
-        graph.rag_tool, "search_knowledge_base", lambda question: rag_result
+        graph.rag_tool,
+        "search_knowledge_base",
+        lambda question, access=None: rag_result,
     )
     monkeypatch.setattr(graph.db_tool, "list_doctors", lambda: doctors or [])
 
@@ -108,7 +144,7 @@ def test_validate_replaces_empty_answer(monkeypatch):
     assert state["error"] == "Empty answer"
 
 
-def test_database_route_lists_appointments(monkeypatch):
+def test_database_route_lists_appointments(monkeypatch, sqlite_engine):
     _patch(monkeypatch, "database")
     monkeypatch.setattr(
         graph.booking_tool,
@@ -116,7 +152,7 @@ def test_database_route_lists_appointments(monkeypatch):
         lambda user=None: "Ali Khan's appointments:\n- #3: Dr. A on 2026-09-07",
     )
 
-    state = run_agent("Show my appointments")
+    state = run_agent("Show my appointments", user=_user())
 
     assert state["route"] == "database"
     assert "#3" in state["answer"]
@@ -136,7 +172,7 @@ def test_database_route_shows_doctor_details(monkeypatch):
     assert "PKR 3000" in state["answer"]
 
 
-def test_booking_route_handles_cancel(monkeypatch):
+def test_booking_route_handles_cancel(monkeypatch, sqlite_engine):
     _patch(monkeypatch, "booking")
     monkeypatch.setattr(
         graph.booking_tool,
@@ -144,13 +180,13 @@ def test_booking_route_handles_cancel(monkeypatch):
         lambda question, user=None: "Appointment #3 has been cancelled.",
     )
 
-    state = run_agent("Cancel appointment 3")
+    state = run_agent("Cancel appointment 3", user=_user())
 
     assert state["route"] == "booking"
     assert "cancelled" in state["answer"]
 
 
-def test_database_route_handles_actions_too(monkeypatch):
+def test_database_route_handles_actions_too(monkeypatch, sqlite_engine):
     """Router misroutes a cancel to database: the action must still run."""
     _patch(monkeypatch, "database")
     monkeypatch.setattr(
@@ -159,12 +195,12 @@ def test_database_route_handles_actions_too(monkeypatch):
         lambda question, user=None: "Appointment #3 has been cancelled.",
     )
 
-    state = run_agent("Cancel appointment 3")
+    state = run_agent("Cancel appointment 3", user=_user())
 
     assert "cancelled" in state["answer"]
 
 
-def test_booking_route_uses_booking_tool(monkeypatch):
+def test_booking_route_uses_booking_tool(monkeypatch, sqlite_engine):
     _patch(monkeypatch, "booking")
     monkeypatch.setattr(
         graph.booking_tool,
@@ -172,7 +208,7 @@ def test_booking_route_uses_booking_tool(monkeypatch):
         lambda question, user=None: f"You'd like to book. On which date and time?",
     )
 
-    state = run_agent("Book an appointment with Dr. Ayesha")
+    state = run_agent("Book an appointment with Dr. Ayesha", user=_user())
 
     assert state["route"] == "booking"
     assert "date and time" in state["answer"]

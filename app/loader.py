@@ -4,6 +4,8 @@ from pathlib import Path
 from langchain_community.document_loaders import PyPDFLoader
 from langchain_core.documents import Document
 
+from app.access import access_for_source
+
 
 DATA_PATH = "knowledge_base"
 
@@ -28,7 +30,11 @@ def _load_txt_pages(file: Path) -> list[Document]:
         documents.append(
             Document(
                 page_content=content,
-                metadata={"source": str(file), "page": index},
+                metadata={
+                    "source": str(file),
+                    "page": index,
+                    "access": access_for_source(str(file)),
+                },
             )
         )
 
@@ -38,6 +44,9 @@ def _load_txt_pages(file: Path) -> list[Document]:
 def load_documents():
     """
     Load PDF and TXT files from the knowledge base.
+
+    Every document carries an "access" tier in its metadata, which the
+    retriever uses to filter results by the caller's role.
     """
 
     documents = []
@@ -45,7 +54,14 @@ def load_documents():
     for file in Path(DATA_PATH).iterdir():
         if file.suffix.lower() == ".pdf":
             loader = PyPDFLoader(str(file))
-            documents.extend(loader.load())
+            pages = loader.load()
+
+            # PyPDFLoader supplies its own metadata; add the access tier
+            # to each page rather than replacing what it found.
+            for page in pages:
+                page.metadata["access"] = access_for_source(str(file))
+
+            documents.extend(pages)
 
         elif file.suffix.lower() == ".txt":
             documents.extend(_load_txt_pages(file))

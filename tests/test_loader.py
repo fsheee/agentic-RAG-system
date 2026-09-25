@@ -47,6 +47,29 @@ def test_skips_unsupported_file_types(knowledge_base):
     assert Path(documents[0].metadata["source"]).suffix == ".txt"
 
 
+def test_documents_are_tagged_with_their_access_tier(knowledge_base):
+    """The retriever filters on this field, so every chunk must carry it."""
+    (knowledge_base / "hr_policy.txt").write_text("Leave policy.", encoding="utf-8")
+    _write_pdf(knowledge_base / "hospital_info.pdf")
+
+    documents = load_documents()
+
+    tiers = {
+        Path(doc.metadata["source"]).name: doc.metadata["access"]
+        for doc in documents
+    }
+
+    assert tiers == {"hr_policy.txt": "staff", "hospital_info.pdf": "public"}
+
+
+def test_unlisted_documents_default_to_public(knowledge_base):
+    (knowledge_base / "leaflet.txt").write_text("Opening times.", encoding="utf-8")
+
+    documents = load_documents()
+
+    assert documents[0].metadata["access"] == "public"
+
+
 def test_load_documents_when_knowledge_base_empty(tmp_path):
     from app import loader
 

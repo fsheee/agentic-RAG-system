@@ -2,6 +2,7 @@ from langchain_core.prompts import ChatPromptTemplate
 from langgraph.graph import END, START, StateGraph
 from sqlmodel import Session
 
+from app.access import tiers_for_role
 from app.agent.state import AgentState
 from app.agent.tools import booking_tool, db_tool, rag_tool
 from app.core import _extract_text, get_llm
@@ -10,9 +11,9 @@ from app.guardrails import check_user_input
 from app.schema import Role, User
 
 # Backend role policy (checked in Python, never by the LLM):
-# - RAG answers come from hospital documents: staff only.
+# - RAG answers are scoped to the document tiers the caller's role may
+#   read (app/access.py), enforced by the Qdrant retrieval filter.
 # - Booking and appointment data: patients (their own) and admins.
-RAG_ROLES = {Role.admin, Role.hr, Role.employee, Role.doctor}
 APPOINTMENT_ROLES = {Role.admin, Role.patient}
 
 ROUTER_PROMPT = ChatPromptTemplate.from_template(
@@ -79,20 +80,15 @@ def router_node(state: AgentState) -> dict:
 
 
 def rag_node(state: AgentState) -> dict:
-    """RAG route: staff only. Delegate to the shared Phase 1 core."""
-    role = state.get("user_role")
-    if role is not None and role not in {r.value for r in RAG_ROLES}:
-        return {
-            "answer": (
-                "The knowledge base assistant is available to hospital "
-                "staff only. If you have a medical concern, please contact "
-                "the hospital directly."
-            ),
-            "sources": [],
-            "documents": [],
-        }
+    """RAG route: delegate to the shared Phase 1 core.
 
-    result = rag_tool.search_knowledge_base(state["question"])
+    The caller's role decides which document tiers are retrieved — an
+    anonymous caller (no role) gets public documents only.
+    """
+    result = rag_tool.search_knowledge_base(
+        state["question"],
+        access=tiers_for_role(state.get("user_role")),
+    )
 
     return {
         "answer": result["answer"],
@@ -101,21 +97,28 @@ def rag_node(state: AgentState) -> dict:
     }
 
 
-def _appointment_user(state: AgentState) -> tuple[User | None, bool]:
-    """Load the requesting user for appointment scoping. Returns
-    (user, denied): user is None when the agent runs unauthenticated
-    (legacy/tests); denied is True when the role may not touch
-    appointments at all."""
+def _appointment_user(state: AgentState) -> tuple[User | None, str | None]:
+    """Load the requesting user for appointment scoping.
+
+    Returns (user, denial). `denial` is None when the caller may touch
+    appointment data, "anonymous" when there is no authenticated identity
+    at all, and "role" when their role may not.
+
+    An anonymous caller is denied rather than waved through: the booking
+    tools read a missing user as the seeded demo patient, so letting one
+    through would expose that patient's appointments and let anyone book,
+    reschedule or cancel them.
+    """
     user_id = state.get("user_id")
     role = state.get("user_role")
     if user_id is None or role is None:
-        return None, False
+        return None, "anonymous"
     if Role(role) not in APPOINTMENT_ROLES:
-        return None, True
+        return None, "role"
 
     with Session(get_engine()) as session:
         user = session.get(User, user_id)
-    return user, False
+    return user, None
 
 
 def _denied_answer() -> dict:
@@ -129,12 +132,25 @@ def _denied_answer() -> dict:
     }
 
 
+def _sign_in_answer() -> dict:
+    return {
+        "answer": "Please sign in to view or manage appointments.",
+        "sources": [],
+        "documents": [],
+    }
+
+
+def _appointment_denial_answer(denial: str | None) -> dict:
+    """Refuse with the message matching why the caller was denied."""
+    return _sign_in_answer() if denial == "anonymous" else _denied_answer()
+
+
 def booking_node(state: AgentState) -> dict:
     """Booking route: cancel/reschedule actions, else the multi-step
     booking workflow (parse -> availability -> confirmation -> book)."""
-    user, denied = _appointment_user(state)
-    if denied:
-        return _denied_answer()
+    user, denial = _appointment_user(state)
+    if denial:
+        return _appointment_denial_answer(denial)
 
     action = booking_tool.handle_appointment_action(state["question"], user)
 
@@ -155,20 +171,33 @@ APPOINTMENT_LIST_KEYWORDS = ("my appointment", "my appointments", "show appointm
 
 
 def database_node(state: AgentState) -> dict:
-    """Database route: structured data from Neon via the (safe) db tool."""
+    """Database route: structured data from Neon via the (safe) db tool.
+
+    Doctor lists, specializations, fees and schedules are public hospital
+    information, reachable by anonymous callers too. Appointment data is
+    private and needs a signed-in patient or admin.
+    """
     question = state["question"].lower()
+    user, denial = _appointment_user(state)
 
-    # The router sometimes sends cancel/reschedule here; the action tool
-    # returns None for non-action questions.
-    user, denied = _appointment_user(state)
-    if denied:
-        return _denied_answer()
+    # Cancel/reschedule and appointment listings are private, and the
+    # router sometimes sends cancel/reschedule here. This is checked
+    # first so an unauthenticated request never reaches the booking
+    # tools, which read a missing user as the seeded demo patient.
+    wants_appointment = any(
+        word in question
+        for word in booking_tool.CANCEL_WORDS + booking_tool.RESCHEDULE_WORDS
+    ) or any(keyword in question for keyword in APPOINTMENT_LIST_KEYWORDS)
 
-    action = booking_tool.handle_appointment_action(state["question"], user)
-    if action is not None:
-        return {"answer": action, "sources": []}
+    if wants_appointment:
+        if denial:
+            return _appointment_denial_answer(denial)
 
-    if any(keyword in question for keyword in APPOINTMENT_LIST_KEYWORDS):
+        # The action tool returns None for non-action questions.
+        action = booking_tool.handle_appointment_action(state["question"], user)
+        if action is not None:
+            return {"answer": action, "sources": []}
+
         return {"answer": booking_tool.list_appointments(user), "sources": []}
 
     if any(word in question for word in FEE_KEYWORDS):
@@ -269,8 +298,9 @@ def build_graph():
 def run_agent(question: str, user: User | None = None) -> AgentState:
     """Invoke the compiled graph for a question and return the final state.
 
-    `user` carries the authenticated identity (None keeps the legacy
-    unauthenticated behavior used by direct module calls and tests).
+    `user` carries the authenticated identity. None means an anonymous
+    caller, which is the most restricted case: public documents only, and
+    no access to appointment data. It never means "unrestricted".
     """
     graph = build_graph()
 

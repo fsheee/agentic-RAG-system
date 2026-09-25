@@ -6,7 +6,7 @@ from app.prompt import RAG_PROMPT
 from app.retriever import retrieve_documents
 
 
-def build_context(question: str) -> tuple[list, list[str]]:
+def build_context(question: str, access: set[str] | None = None) -> tuple[list, list[str]]:
     """
     Retrieve relevant documents and build numbered context blocks.
 
@@ -14,11 +14,14 @@ def build_context(question: str) -> tuple[list, list[str]]:
     in exactly one place. Retrieved chunks are untrusted content, so each
     block is sanitized before it is used in a prompt.
 
+    `access` is the set of document tiers the caller may read; see
+    app/access.py. Callers serving a request must pass one.
+
     Blocks are numbered so the LLM can cite the ones it actually used —
     a retrieved-but-unused chunk (e.g. an HR handbook for a hospital
     location question) must not appear as a source.
     """
-    documents = retrieve_documents(question)
+    documents = retrieve_documents(question, access=access)
 
     blocks = [
         f"[{i}] {sanitize_context(document.page_content)}"
@@ -88,14 +91,18 @@ def _split_answer_and_sources(answer: str) -> tuple[str, list[int]]:
     return answer.strip(), []
 
 
-def ask(question: str) -> dict:
+def ask(question: str, access: set[str] | None = None) -> dict:
     """
     The single reusable RAG entry point.
 
     question -> {answer, sources, documents}
+
+    `access` restricts retrieval to the given document tiers; see
+    app/access.py. Callers serving an authenticated or public request must
+    pass the tiers for that caller's role.
     """
     try:
-        documents, blocks = build_context(question)
+        documents, blocks = build_context(question, access=access)
 
         prompt = RAG_PROMPT.invoke(
             {
@@ -119,7 +126,11 @@ def ask(question: str) -> dict:
                 if 1 <= number <= len(documents)
             ]
             # Model omitted the Sources line -> keep the previous
-            # behavior of citing every retrieved document.
+            # behavior of citing every retrieved document. This is only
+            # safe because `documents` is already restricted to the
+            # caller's access tiers — anything that widens or re-merges
+            # this list (an unfiltered retry, a cache of another role's
+            # results) would turn this line into a leak.
             if not supported:
                 supported = documents
 

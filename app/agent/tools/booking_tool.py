@@ -25,6 +25,7 @@ from app.crud import (
     get_doctor_schedule,
     get_doctors,
     get_patient_appointments,
+    get_patient_by_user_id,
     reschedule_appointment,
 )
 from app.db import get_engine
@@ -62,9 +63,7 @@ def _find_patient(session: Session, user: User | None = None) -> Patient | None:
     Without (legacy/direct use): the seeded demo patient.
     """
     if user is not None:
-        return session.exec(
-            select(Patient).where(Patient.user_id == user.id)
-        ).first()
+        return get_patient_by_user_id(session, user.id)
     return session.exec(
         select(Patient).where(Patient.name == DEFAULT_PATIENT_NAME)
     ).first()
@@ -169,11 +168,60 @@ def _parse_time(text: str) -> time | None:
     return None
 
 
-def _end_time(start: time) -> time:
+def end_time_for(start: time) -> time:
+    """End of an appointment slot starting at `start`."""
     combined = datetime.combine(date.today(), start) + timedelta(
         minutes=APPOINTMENT_MINUTES
     )
     return combined.time()
+
+
+_DAY_NAMES_SHORT = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
+
+
+def check_slot(
+    session: Session,
+    doctor_id: int,
+    doctor_name: str,
+    day: date,
+    start: time,
+    end: time,
+    exclude_appointment_id: int | None = None,
+) -> tuple[bool, str]:
+    """Validate a slot against the doctor's weekly schedule and existing
+    appointments. Returns (available, message); nothing is written.
+
+    `exclude_appointment_id` lets a reschedule ignore the appointment
+    being moved, which would otherwise conflict with itself.
+
+    The single implementation of this rule: the booking workflow, the
+    reschedule path, and the REST booking endpoint all call it, so they
+    cannot drift apart.
+    """
+    schedule = get_doctor_schedule(session, doctor_id)
+    on_day = [
+        slot
+        for slot in schedule
+        if slot.day_of_week == day.weekday()
+        and slot.start_time <= start
+        and end <= slot.end_time
+    ]
+
+    if not on_day:
+        days = ", ".join(_DAY_NAMES_SHORT[slot.day_of_week] for slot in schedule)
+        return False, (
+            f"{doctor_name} is not available on that day/time. "
+            f"Scheduled days: {days}."
+        )
+
+    conflict = find_conflicting_appointment(session, doctor_id, day, start, end)
+    if conflict is not None and conflict.id != exclude_appointment_id:
+        return False, (
+            f"Sorry, {doctor_name} already has an appointment at "
+            f"{conflict.start_time} on {day}."
+        )
+
+    return True, ""
 
 
 # --------------------------------------------------------------------------
@@ -237,44 +285,24 @@ def check_availability_node(state: BookingState) -> dict:
     existing appointments. Nothing is written to the database here."""
     day = state["day"]
     start = state["start"]
-    end = _end_time(start)
+    end = end_time_for(start)
 
     with Session(get_engine()) as session:
-        schedule = get_doctor_schedule(session, state["doctor_id"])
-        on_day = [
-            slot
-            for slot in schedule
-            if slot.day_of_week == day.weekday()
-            and slot.start_time <= start
-            and end <= slot.end_time
-        ]
-
-        if not on_day:
-            days = ", ".join(
-                ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"][slot.day_of_week]
-                for slot in schedule
-            )
-            return {
-                "available": False,
-                "availability_message": (
-                    f"{state['doctor_name']} is not available on that day/time. "
-                    f"Scheduled days: {days}."
-                ),
-                "awaiting_confirmation": False,
-            }
-
-        conflict = find_conflicting_appointment(
-            session, state["doctor_id"], day, start, end
+        available, message = check_slot(
+            session,
+            state["doctor_id"],
+            state["doctor_name"],
+            day,
+            start,
+            end,
         )
-        if conflict:
-            return {
-                "available": False,
-                "availability_message": (
-                    f"Sorry, {state['doctor_name']} already has an appointment at "
-                    f"{conflict.start_time} on {day}."
-                ),
-                "awaiting_confirmation": False,
-            }
+
+    if not available:
+        return {
+            "available": False,
+            "availability_message": message,
+            "awaiting_confirmation": False,
+        }
 
     return {
         "available": True,
@@ -285,7 +313,7 @@ def check_availability_node(state: BookingState) -> dict:
 
 def ask_confirmation_node(state: BookingState) -> dict:
     """Availability passed: ask the user to confirm before booking."""
-    end = _end_time(state["start"])
+    end = end_time_for(state["start"])
     who = _patient_display_name(state["user"])
     return {
         "answer": (
@@ -309,7 +337,7 @@ def _patient_display_name(user: User | None) -> str:
 
 def book_node(state: BookingState) -> dict:
     """User confirmed: create the appointment now."""
-    end = _end_time(state["start"])
+    end = end_time_for(state["start"])
 
     with Session(get_engine()) as session:
         patient = _find_patient(session, state["user"])
@@ -611,36 +639,22 @@ def handle_appointment_action(question: str, user: User | None = None) -> str | 
                 "'reschedule appointment 3 to 2026-09-12 at 10am'."
             )
 
-        end = _end_time(start)
+        end = end_time_for(start)
 
         if doctor is not None:
-            schedule = get_doctor_schedule(session, doctor.id)
-            on_day = [
-                slot
-                for slot in schedule
-                if slot.day_of_week == day.weekday()
-                and slot.start_time <= start
-                and end <= slot.end_time
-            ]
-
-            if not on_day:
-                days = ", ".join(
-                    ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"][slot.day_of_week]
-                    for slot in schedule
-                )
-                return (
-                    f"{doctor.name} is not available on that day/time. "
-                    f"Scheduled days: {days}."
-                )
-
-            conflict = find_conflicting_appointment(
-                session, doctor.id, day, start, end
+            # Same rule as booking; exclude this appointment so it does
+            # not conflict with itself.
+            available, message = check_slot(
+                session,
+                doctor.id,
+                doctor.name,
+                day,
+                start,
+                end,
+                exclude_appointment_id=appointment_id,
             )
-            if conflict is not None and conflict.id != appointment_id:
-                return (
-                    f"Sorry, {doctor.name} already has an appointment at "
-                    f"{conflict.start_time} on {day}."
-                )
+            if not available:
+                return message
 
         moved = reschedule_appointment(session, appointment_id, day, start, end)
         if moved is None:

@@ -26,6 +26,9 @@ class Doctor(SQLModel, table=True):
     name: str
     specialization: str
     consultation_fee: int | None = Field(default=None)  # PKR; null = not set
+    # Links a Doctor record to its login, mirroring Patient.user_id.
+    # Nullable: seeded doctors have no account until an admin creates one.
+    user_id: int | None = Field(default=None, foreign_key="user.id", unique=True)
 
 
 class DoctorSchedule(SQLModel, table=True):

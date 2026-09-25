@@ -49,6 +49,9 @@ def _add_missing_columns():
         session.execute(
             text("ALTER TABLE patient ADD COLUMN IF NOT EXISTS user_id INTEGER")
         )
+        session.execute(
+            text("ALTER TABLE doctor ADD COLUMN IF NOT EXISTS user_id INTEGER")
+        )
         session.commit()
 
 
