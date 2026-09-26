@@ -13,3 +13,10 @@ class AgentState(TypedDict):
     # never in the LLM.
     user_id: int | None
     user_role: str | None
+    # Prior turns as [{"role", "content"}] dicts — plain data rather than
+    # ORM objects, so this module never imports the database schema.
+    # None means no memory (anonymous callers, CLI, tests).
+    history: list[dict] | None
+    # Which conversation this turn belongs to. None for anonymous and for
+    # direct/CLI callers; used to scope pending booking state.
+    conversation_id: int | None

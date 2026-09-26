@@ -2,7 +2,15 @@ from datetime import date, datetime, time
 
 from sqlmodel import Session, select
 
-from app.schema import Appointment, Doctor, DoctorSchedule, Patient
+from app.schema import (
+    Appointment,
+    Conversation,
+    Doctor,
+    DoctorSchedule,
+    Message,
+    Patient,
+    PendingBooking,
+)
 
 
 def get_doctors(session: Session) -> list[Doctor]:
@@ -210,3 +218,153 @@ def find_conflicting_appointment(
             return appointment
 
     return None
+
+
+# --------------------------------------------------------------------------
+# Conversations and messages
+# --------------------------------------------------------------------------
+
+# A single stored turn is capped so a pathological answer cannot bloat Neon
+# or the prompt. Very long doctor/appointment listings will be cut.
+MAX_MESSAGE_CHARS = 8000
+TITLE_MAX_CHARS = 200
+HISTORY_LIMIT = 10  # messages, i.e. 5 turns
+
+
+def create_conversation(
+    session: Session, user_id: int, title: str | None = None
+) -> Conversation:
+    """Open a conversation owned by `user_id`."""
+    now = datetime.now()
+    conversation = Conversation(
+        user_id=user_id,
+        title=title[:TITLE_MAX_CHARS] if title else None,
+        created_at=now,
+        updated_at=now,
+    )
+    session.add(conversation)
+    session.commit()
+    session.refresh(conversation)
+    return conversation
+
+
+def get_conversation_for_user(
+    session: Session, conversation_id: int, user_id: int
+) -> Conversation | None:
+    """Ownership-checked lookup: filters on id AND owner together.
+
+    This is what makes "a user reads only their own conversations" true —
+    another user's id resolves to None rather than to their data. Never
+    replace this with a bare session.get(Conversation, id) on a request path.
+    """
+    return session.exec(
+        select(Conversation).where(
+            Conversation.id == conversation_id,
+            Conversation.user_id == user_id,
+        )
+    ).first()
+
+
+def append_message(
+    session: Session, conversation_id: int, role: str, content: str
+) -> Message:
+    """Append a turn. `role` is "user" or "assistant".
+
+    Callers must have already established that the conversation belongs to
+    the requesting user.
+    """
+    message = Message(
+        conversation_id=conversation_id,
+        role=role,
+        content=content[:MAX_MESSAGE_CHARS],
+        created_at=datetime.now(),
+    )
+    session.add(message)
+
+    # Keep "recent chats" ordering honest: the conversation moves to the top
+    # when it gains a turn.
+    conversation = session.get(Conversation, conversation_id)
+    if conversation is not None:
+        conversation.updated_at = datetime.now()
+        session.add(conversation)
+
+    session.commit()
+    session.refresh(message)
+    return message
+
+
+def get_recent_messages(
+    session: Session, conversation_id: int, limit: int = HISTORY_LIMIT
+) -> list[Message]:
+    """The most recent messages, oldest first.
+
+    Ordered by id rather than created_at: ids are monotonic within a
+    conversation, while two turns can share a timestamp.
+    """
+    recent = session.exec(
+        select(Message)
+        .where(Message.conversation_id == conversation_id)
+        .order_by(Message.id.desc())
+        .limit(limit)
+    ).all()
+
+    return list(reversed(recent))
+
+
+# --------------------------------------------------------------------------
+# Pending booking state
+# --------------------------------------------------------------------------
+
+
+def get_pending_booking(
+    session: Session, conversation_id: int
+) -> PendingBooking | None:
+    """The pending booking for a conversation, if one is awaiting a reply."""
+    return session.exec(
+        select(PendingBooking).where(
+            PendingBooking.conversation_id == conversation_id
+        )
+    ).first()
+
+
+def save_pending_booking(
+    session: Session,
+    conversation_id: int,
+    doctor_id: int | None,
+    doctor_name: str,
+    specialization: str,
+    day: date | None,
+    start: time | None,
+    awaiting_confirmation: bool = False,
+) -> PendingBooking:
+    """Upsert the conversation's pending booking.
+
+    One row per conversation (unique conversation_id), so this updates in
+    place rather than accumulating rows across turns.
+    """
+    pending = get_pending_booking(session, conversation_id)
+
+    if pending is None:
+        pending = PendingBooking(conversation_id=conversation_id)
+        session.add(pending)
+
+    pending.doctor_id = doctor_id
+    pending.doctor_name = doctor_name
+    pending.specialization = specialization
+    pending.day = day
+    pending.start = start
+    pending.awaiting_confirmation = awaiting_confirmation
+    pending.updated_at = datetime.now()
+
+    session.add(pending)
+    session.commit()
+    session.refresh(pending)
+    return pending
+
+
+def clear_pending_booking(session: Session, conversation_id: int) -> None:
+    """Forget the conversation's pending booking. Safe when none exists."""
+    pending = get_pending_booking(session, conversation_id)
+    if pending is not None:
+        session.delete(pending)
+        session.commit()

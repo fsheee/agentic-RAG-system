@@ -62,3 +62,67 @@ class Appointment(SQLModel, table=True):
 
     status: str = "booked"
     created_at: datetime | None = Field(default=None)  # when the booking was made
+
+
+class Conversation(SQLModel, table=True):
+    id: int | None = Field(default=None, primary_key=True)
+
+    # Ownership is mandatory, unlike Patient.user_id: conversations are only
+    # ever created for an authenticated caller, so every read can filter on
+    # both id and owner and a conversation is never orphaned.
+    user_id: int = Field(foreign_key="user.id", index=True)
+
+    title: str | None = Field(default=None)  # first question, truncated
+    created_at: datetime | None = Field(default=None)
+    updated_at: datetime | None = Field(default=None)  # orders recent chats
+
+
+class Message(SQLModel, table=True):
+    id: int | None = Field(default=None, primary_key=True)
+
+    conversation_id: int = Field(foreign_key="conversation.id", index=True)
+
+    role: str  # "user" | "assistant"
+    content: str
+    created_at: datetime | None = Field(default=None)
+
+
+class PendingBooking(SQLModel, table=True):
+    """A booking awaiting the user's yes/no, one row per conversation.
+
+    Existence of the row *is* the "awaiting confirmation" flag: the row is
+    written when availability passes and deleted when the turn resolves
+    (booked, declined, or unavailable), so counting rows can never drift
+    from the state it represents.
+
+    Keyed by conversation so a half-finished booking is scoped to the
+    person who started it, survives a restart, and is visible to every
+    worker — none of which a process-local dictionary could offer.
+    """
+
+    id: int | None = Field(default=None, primary_key=True)
+
+    conversation_id: int = Field(
+        foreign_key="conversation.id", unique=True, index=True
+    )
+
+    # Deliberately NOT a foreign key: this is transient working state, not
+    # a relational record. A doctor removed mid-conversation must not block
+    # the row from being written or cleaned up.
+    doctor_id: int | None = Field(default=None)
+
+    doctor_name: str = ""
+    specialization: str = ""
+
+    # Nullable so a partially-built request cannot fail to persist; the
+    # booking workflow's own routing still guards against acting on one.
+    day: date | None = Field(default=None)
+    start: time | None = Field(default=None)
+
+    # True only when the row is a finished request waiting on yes/no. A
+    # half-built booking (doctor known, slot missing, or vice versa) is
+    # stored with this False, so it can be resumed without the router
+    # treating an unrelated next question as the answer to a confirmation.
+    awaiting_confirmation: bool = Field(default=False)
+
+    updated_at: datetime | None = Field(default=None)

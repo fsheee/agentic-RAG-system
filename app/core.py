@@ -31,6 +31,48 @@ def build_context(question: str, access: set[str] | None = None) -> tuple[list, 
     return documents, blocks
 
 
+# Cap on the rendered history block, independent of the per-message cap in
+# crud.MAX_MESSAGE_CHARS. Oldest turns are dropped once it is exceeded.
+HISTORY_MAX_CHARS = 4000
+
+
+def format_history(history: list[dict] | None) -> str:
+    """
+    Render past conversation turns for the prompt.
+
+    History is untrusted on replay: a stored turn can contain an injection
+    attempt that the guardrail blocked for the live turn, and assistant
+    turns embed retrieved-document text. Each message is therefore
+    neutralised with sanitize_context — the same treatment retrieved chunks
+    get in build_context.
+
+    Note this deliberately does NOT reuse check_user_input: that function's
+    job is to *reject* a turn, and rejecting here would abort every later
+    question in a conversation whose first turn once tripped a pattern.
+
+    When the rendered text exceeds HISTORY_MAX_CHARS the oldest turns are
+    dropped, so the most recent context always survives.
+    """
+    if not history:
+        return ""
+
+    lines: list[str] = []
+    total = 0
+
+    for message in reversed(history):
+        content = sanitize_context(str(message.get("content", "")))
+        who = "User" if message.get("role") == "user" else "Assistant"
+        line = f"{who}: {content}"
+
+        if total + len(line) > HISTORY_MAX_CHARS:
+            break
+
+        lines.append(line)
+        total += len(line)
+
+    return "\n".join(reversed(lines))
+
+
 def format_sources(documents: list) -> list[dict]:
     """De-duplicated source citations: file + page, preserving order."""
     sources = []
@@ -91,7 +133,11 @@ def _split_answer_and_sources(answer: str) -> tuple[str, list[int]]:
     return answer.strip(), []
 
 
-def ask(question: str, access: set[str] | None = None) -> dict:
+def ask(
+    question: str,
+    access: set[str] | None = None,
+    history: list[dict] | None = None,
+) -> dict:
     """
     The single reusable RAG entry point.
 
@@ -100,12 +146,20 @@ def ask(question: str, access: set[str] | None = None) -> dict:
     `access` restricts retrieval to the given document tiers; see
     app/access.py. Callers serving an authenticated or public request must
     pass the tiers for that caller's role.
+
+    `history` is prior turns as [{"role", "content"}] dicts — plain data,
+    never ORM objects, so this module stays free of any database import.
+    It is optional: the CLI, the golden eval and rag_chain pass no history.
+
+    Retrieval still embeds `question` alone; history informs the answer, it
+    does not rewrite the query (see the plan's out-of-scope note).
     """
     try:
         documents, blocks = build_context(question, access=access)
 
         prompt = RAG_PROMPT.invoke(
             {
+                "history": format_history(history),
                 "context": "\n\n".join(blocks),
                 "input": question,
             }

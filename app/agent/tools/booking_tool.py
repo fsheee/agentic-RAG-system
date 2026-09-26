@@ -7,8 +7,9 @@ one immediate call:
 
 An appointment is only created after the user explicitly confirms.
 
-Single-user demo: bookings are made for the seeded patient (Ali Khan) and
-the pending booking state is kept in memory between turns.
+Pending booking state lives in Neon, keyed by the conversation it belongs
+to (see crud.get_pending_booking), so a half-finished booking is scoped to
+one conversation, survives a restart, and is shared across workers.
 """
 
 import re
@@ -21,12 +22,15 @@ from sqlmodel import Session, select
 from app.crud import (
     book_appointment,
     cancel_appointment,
+    clear_pending_booking,
     find_conflicting_appointment,
     get_doctor_schedule,
     get_doctors,
     get_patient_appointments,
     get_patient_by_user_id,
+    get_pending_booking,
     reschedule_appointment,
+    save_pending_booking,
 )
 from app.db import get_engine
 from app.schema import Appointment, Patient, User
@@ -42,18 +46,26 @@ DENY_WORDS = ("no", "cancel", "don't", "do not", "stop")
 # Shared helpers
 # --------------------------------------------------------------------------
 
-def is_awaiting_confirmation() -> bool:
-    """True while a booking is waiting for the user's yes/no reply."""
-    return bool(_pending.get("awaiting_confirmation"))
+def is_awaiting_confirmation(conversation_id: int | None = None) -> bool:
+    """True while this conversation has a booking waiting on a yes/no reply.
 
+    A half-built booking (doctor known, slot still missing) is stored too,
+    but is NOT awaiting confirmation — the next question may be unrelated,
+    and only a completed request should bypass the router.
 
-def reset_pending():
-    """Forget any pending booking (used by tests)."""
-    global _pending
-    _pending = {}
+    Pending state lives in Neon keyed by conversation (see
+    crud.get_pending_booking), so it survives a restart and is shared by
+    every worker.
 
+    Without a conversation there is nothing to key on, so this is False —
+    deliberately, rather than falling back to a shared default slot.
+    """
+    if conversation_id is None:
+        return False
 
-_pending: dict = {}
+    with Session(get_engine()) as session:
+        pending = get_pending_booking(session, conversation_id)
+        return pending is not None and pending.awaiting_confirmation
 
 
 def _find_patient(session: Session, user: User | None = None) -> Patient | None:
@@ -96,6 +108,64 @@ _DMY_DATE = re.compile(r"\b(\d{1,2})[/](\d{1,2})[/](\d{4})\b")
 
 _WEEKDAYS = ("monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday")
 
+# Month names, including the common 3-4 letter abbreviations, so a natural
+# "28th Sept 2026" parses as readily as "2026-09-28".
+_MONTHS = {
+    "january": 1, "jan": 1,
+    "february": 2, "feb": 2,
+    "march": 3, "mar": 3,
+    "april": 4, "apr": 4,
+    "may": 5,
+    "june": 6, "jun": 6,
+    "july": 7, "jul": 7,
+    "august": 8, "aug": 8,
+    "september": 9, "sept": 9, "sep": 9,
+    "october": 10, "oct": 10,
+    "november": 11, "nov": 11,
+    "december": 12, "dec": 12,
+}
+
+# Longest first so "sept" is not swallowed by "sep".
+_MONTH_ALT = "|".join(sorted(_MONTHS, key=len, reverse=True))
+
+# "28th Sept 2026" / "28 September 2026" / "28 sept"
+_DAY_MONTH_YEAR = re.compile(
+    rf"\b(\d{{1,2}})(?:st|nd|rd|th)?\s+({_MONTH_ALT})\.?\s*,?\s*(\d{{4}})?\b",
+    re.IGNORECASE,
+)
+
+# "Sept 28 2026" / "September 28, 2026" / "sept 28"
+_MONTH_DAY_YEAR = re.compile(
+    rf"\b({_MONTH_ALT})\.?\s+(\d{{1,2}})(?:st|nd|rd|th)?\s*,?\s*(\d{{4}})?\b",
+    re.IGNORECASE,
+)
+
+
+def _month_name_date(text: str) -> date | None:
+    """A date written with a month name, in either order.
+
+    The year is optional and defaults to the current one.
+    """
+    for pattern, day_group, month_group, year_group in (
+        (_DAY_MONTH_YEAR, 1, 2, 3),
+        (_MONTH_DAY_YEAR, 2, 1, 3),
+    ):
+        match = pattern.search(text)
+        if match is None:
+            continue
+
+        try:
+            return date(
+                int(match.group(year_group) or date.today().year),
+                _MONTHS[match.group(month_group).lower().rstrip(".")],
+                int(match.group(day_group)),
+            )
+        except ValueError:
+            # e.g. "31 February" — a real-looking but impossible date.
+            return None
+
+    return None
+
 
 def _parse_date(text: str) -> date | None:
     lowered = text.lower()
@@ -118,6 +188,11 @@ def _parse_date(text: str) -> date | None:
             return date(int(match.group(3)), int(match.group(2)), int(match.group(1)))
         except ValueError:
             return None
+
+    # Month names: "28th Sept 2026", "September 28, 2026".
+    month_date = _month_name_date(text)
+    if month_date is not None:
+        return month_date
 
     # Weekday names: the next occurrence ("friday" -> coming Friday).
     for index, name in enumerate(_WEEKDAYS):
@@ -240,6 +315,10 @@ class BookingState(TypedDict):
     availability_message: str
     awaiting_confirmation: bool
     confirmation: str | None  # "yes" | "no" once the user replied
+    # True once the turn reached a terminal outcome (booked, declined or
+    # unavailable). False means the workflow is still collecting details,
+    # so whatever was parsed must be carried to the next turn.
+    resolved: bool
     answer: str
 
 
@@ -385,6 +464,7 @@ def book_node(state: BookingState) -> dict:
     return {
         "answer": message,
         "awaiting_confirmation": False,
+        "resolved": True,
     }
 
 
@@ -394,11 +474,13 @@ def decline_node(state: BookingState) -> dict:
         "answer": "Okay, the booking was cancelled.",
         "awaiting_confirmation": False,
         "confirmation": None,
+        "resolved": True,
     }
 
 
 def unavailable_node(state: BookingState) -> dict:
-    return {"answer": state["availability_message"]}
+    """The requested slot is not bookable; nothing is left in progress."""
+    return {"answer": state["availability_message"], "resolved": True}
 
 
 def ask_doctor_node(state: BookingState) -> dict:
@@ -479,39 +561,96 @@ def build_booking_graph():
     return graph.compile()
 
 
-def run_booking(question: str, user: User | None = None) -> str:
-    """Run one turn of the booking workflow, carrying pending state over
-    from the previous turn. Returns the answer text."""
-    global _pending
+def _load_pending(conversation_id: int | None) -> dict:
+    """Pending booking state for this conversation, or {} when there is none."""
+    if conversation_id is None:
+        return {}
+
+    with Session(get_engine()) as session:
+        pending = get_pending_booking(session, conversation_id)
+        if pending is None:
+            return {}
+
+        return {
+            "doctor_id": pending.doctor_id,
+            "doctor_name": pending.doctor_name,
+            "specialization": pending.specialization,
+            "day": pending.day,
+            "start": pending.start,
+            "awaiting_confirmation": pending.awaiting_confirmation,
+        }
+
+
+def _save_pending(conversation_id: int | None, result: BookingState) -> None:
+    """Persist whatever the turn established.
+
+    Anything learned is kept — a doctor chosen in one turn and a time given
+    in the next both survive — because dropping partial progress forces the
+    user to repeat themselves. Only a terminal outcome (booked, declined,
+    unavailable) clears the row.
+    """
+    if conversation_id is None:
+        return
+
+    learned_nothing = (
+        result["doctor_id"] is None
+        and result["day"] is None
+        and result["start"] is None
+    )
+
+    with Session(get_engine()) as session:
+        if result["resolved"] or learned_nothing:
+            clear_pending_booking(session, conversation_id)
+            return
+
+        save_pending_booking(
+            session,
+            conversation_id,
+            doctor_id=result["doctor_id"],
+            doctor_name=result["doctor_name"],
+            specialization=result["specialization"],
+            day=result["day"],
+            start=result["start"],
+            awaiting_confirmation=result["awaiting_confirmation"],
+        )
+
+
+def run_booking(
+    question: str, user: User | None = None, conversation_id: int | None = None
+) -> str:
+    """Run one turn of the booking workflow. Returns the answer.
+
+    `conversation_id` keys the pending state, which is loaded from and
+    saved to Neon so a half-finished booking survives a restart and is
+    shared across workers.
+
+    With no conversation_id there is nowhere to keep multi-turn state, so
+    the turn runs stateless: it will not carry a confirmation over to the
+    next call. The API always supplies one for an authenticated caller.
+    """
+    pending = _load_pending(conversation_id)
 
     graph = build_booking_graph()
 
     initial: BookingState = {
         "question": question,
         "user": user,
-        "doctor_id": _pending.get("doctor_id"),
-        "doctor_name": _pending.get("doctor_name", ""),
-        "specialization": _pending.get("specialization", ""),
-        "day": _pending.get("day"),
-        "start": _pending.get("start"),
+        "doctor_id": pending.get("doctor_id"),
+        "doctor_name": pending.get("doctor_name", ""),
+        "specialization": pending.get("specialization", ""),
+        "day": pending.get("day"),
+        "start": pending.get("start"),
         "available": None,
         "availability_message": "",
-        "awaiting_confirmation": _pending.get("awaiting_confirmation", False),
+        "awaiting_confirmation": pending.get("awaiting_confirmation", False),
         "confirmation": None,
+        "resolved": False,
         "answer": "",
     }
 
     result = graph.invoke(initial)
 
-    still_pending = result["awaiting_confirmation"]
-    _pending = {
-        "doctor_id": result["doctor_id"],
-        "doctor_name": result["doctor_name"],
-        "specialization": result["specialization"],
-        "day": result["day"],
-        "start": result["start"],
-        "awaiting_confirmation": still_pending,
-    } if still_pending else {}
+    _save_pending(conversation_id, result)
 
     return result["answer"]
 

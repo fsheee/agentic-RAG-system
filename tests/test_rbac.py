@@ -33,7 +33,7 @@ def _record_rag(monkeypatch, answer="Visiting hours are 10am to 8pm."):
     """Stub the RAG tool, recording the access tiers it was called with."""
     calls = []
 
-    def fake(question, access=None):
+    def fake(question, access=None, history=None):
         calls.append(access)
         return {"answer": answer, "sources": [], "documents": []}
 
@@ -116,7 +116,7 @@ def test_booking_route_denied_for_employee(monkeypatch):
     _patch(monkeypatch, "booking")
     called = []
     monkeypatch.setattr(
-        graph.booking_tool, "run_booking", lambda q, u=None: called.append(q)
+        graph.booking_tool, "run_booking", lambda q, u=None, conversation_id=None: called.append(q)
     )
 
     state = run_agent(
@@ -158,7 +158,7 @@ def test_booking_route_denied_for_anonymous(monkeypatch):
     _patch(monkeypatch, "booking")
     called = []
     monkeypatch.setattr(
-        graph.booking_tool, "run_booking", lambda q, u=None: called.append(q)
+        graph.booking_tool, "run_booking", lambda q, u=None, conversation_id=None: called.append(q)
     )
 
     state = run_agent("Book an appointment with Dr. Sarah tomorrow at 10am")

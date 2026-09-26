@@ -72,8 +72,11 @@ def guardrail_node(state: AgentState) -> dict:
 
 def router_node(state: AgentState) -> dict:
     # A pending booking confirmation must not be re-routed by the LLM —
-    # a bare "yes"/"no" would otherwise end up somewhere else.
-    if booking_tool.is_awaiting_confirmation():
+    # a bare "yes"/"no" would otherwise end up somewhere else. Pending
+    # state is keyed by conversation, so this only fires for the
+    # conversation that actually has one; without a conversation id it is
+    # always False rather than falling back to a shared slot.
+    if booking_tool.is_awaiting_confirmation(state.get("conversation_id")):
         return {"route": "booking"}
 
     return {"route": route_question(state["question"])}
@@ -88,6 +91,7 @@ def rag_node(state: AgentState) -> dict:
     result = rag_tool.search_knowledge_base(
         state["question"],
         access=tiers_for_role(state.get("user_role")),
+        history=state.get("history"),
     )
 
     return {
@@ -157,7 +161,9 @@ def booking_node(state: AgentState) -> dict:
     answer = (
         action
         if action is not None
-        else booking_tool.run_booking(state["question"], user)
+        else booking_tool.run_booking(
+            state["question"], user, conversation_id=state.get("conversation_id")
+        )
     )
 
     return {"answer": answer, "sources": [], "documents": []}
@@ -295,12 +301,25 @@ def build_graph():
     return graph.compile()
 
 
-def run_agent(question: str, user: User | None = None) -> AgentState:
+def run_agent(
+    question: str,
+    user: User | None = None,
+    history: list[dict] | None = None,
+    conversation_id: int | None = None,
+) -> AgentState:
     """Invoke the compiled graph for a question and return the final state.
 
     `user` carries the authenticated identity. None means an anonymous
     caller, which is the most restricted case: public documents only, and
     no access to appointment data. It never means "unrestricted".
+
+    `history` is prior turns as [{"role", "content"}] dicts, already
+    loaded and ownership-checked by the caller. `conversation_id` scopes
+    pending booking state to this conversation, so two conversations
+    cannot confirm each other's bookings.
+
+    Both are optional: the CLI, tests and direct module calls omit them
+    and get the previous single-turn behavior.
     """
     graph = build_graph()
 
@@ -313,6 +332,8 @@ def run_agent(question: str, user: User | None = None) -> AgentState:
         "error": None,
         "user_id": user.id if user else None,
         "user_role": user.role.value if user else None,
+        "history": history,
+        "conversation_id": conversation_id,
     }
 
     return graph.invoke(initial)
