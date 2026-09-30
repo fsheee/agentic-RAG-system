@@ -82,8 +82,12 @@ def _find_patient(session: Session, user: User | None = None) -> Patient | None:
 
 
 def _find_doctor(question: str, doctors):
-    """Match a doctor by name in the question ('dr. ayesha', full name...)."""
+    """Match a doctor by name in the question ('dr. ayesha', full name...),
+    including shortened or slightly misspelled names ('sara' -> 'sarah')."""
     text = question.lower().replace("dr.", " ").replace("dr", " ")
+    # Words long enough to be a real name fragment; short ones ("4pm")
+    # would prefix-match too eagerly.
+    words = [word for word in text.split() if len(word) >= 4]
 
     for doctor in doctors:
         name = doctor.name.lower()
@@ -91,13 +95,18 @@ def _find_doctor(question: str, doctors):
             return doctor
 
         # Match on any single distinctive name token ("dr. ayesha",
-        # "siddiqui") when the full name is not spelled out.
+        # "siddiqui") when the full name is not spelled out — or on a
+        # typed word sharing a prefix with a token ("sara" -> "sarah").
         tokens = [
             token
             for token in name.replace("dr.", "").split()
             if len(token) > 3
         ]
-        if tokens and any(token in text for token in tokens):
+        if tokens and any(
+            token in text
+            or any(word.startswith(token) or token.startswith(word) for word in words)
+            for token in tokens
+        ):
             return doctor
 
     return None
@@ -306,6 +315,10 @@ def check_slot(
 class BookingState(TypedDict):
     question: str
     user: User | None
+    # Prior turns as [{"role", "content"}] dicts, used only when the
+    # current message names no doctor — see parse_node. None/empty for
+    # stateless callers (CLI, tests without history).
+    history: list[dict] | None
     doctor_id: int | None
     doctor_name: str
     specialization: str
@@ -340,6 +353,20 @@ def parse_node(state: BookingState) -> dict:
     with Session(get_engine()) as session:
         doctors = get_doctors(session)
         doctor = _find_doctor(question, doctors)
+
+        # No doctor in this message and none pending: fall back to the
+        # most recent user message that named one, so "confirm my
+        # appointment friday 11am" continues the doctor discussed in the
+        # previous turn instead of asking again. Only user messages are
+        # scanned — assistant replies list every doctor and would match
+        # arbitrarily.
+        if doctor is None and state.get("doctor_id") is None:
+            for message in reversed(state.get("history") or []):
+                if message.get("role") != "user":
+                    continue
+                doctor = _find_doctor(str(message.get("content") or ""), doctors)
+                if doctor is not None:
+                    break
 
     if doctor is not None:
         updates.update(
@@ -616,13 +643,21 @@ def _save_pending(conversation_id: int | None, result: BookingState) -> None:
 
 
 def run_booking(
-    question: str, user: User | None = None, conversation_id: int | None = None
+    question: str,
+    user: User | None = None,
+    conversation_id: int | None = None,
+    history: list[dict] | None = None,
 ) -> str:
     """Run one turn of the booking workflow. Returns the answer.
 
     `conversation_id` keys the pending state, which is loaded from and
     saved to Neon so a half-finished booking survives a restart and is
     shared across workers.
+
+    `history` is prior turns (same shape the API loads for `/ask`). It is
+    consulted only when the current message names no doctor and none is
+    pending, so the booking can continue the doctor discussed earlier in
+    the conversation.
 
     With no conversation_id there is nowhere to keep multi-turn state, so
     the turn runs stateless: it will not carry a confirmation over to the
@@ -635,6 +670,7 @@ def run_booking(
     initial: BookingState = {
         "question": question,
         "user": user,
+        "history": history,
         "doctor_id": pending.get("doctor_id"),
         "doctor_name": pending.get("doctor_name", ""),
         "specialization": pending.get("specialization", ""),

@@ -162,7 +162,12 @@ def booking_node(state: AgentState) -> dict:
         action
         if action is not None
         else booking_tool.run_booking(
-            state["question"], user, conversation_id=state.get("conversation_id")
+            state["question"],
+            user,
+            conversation_id=state.get("conversation_id"),
+            # Lets the booking continue the doctor named in an earlier
+            # turn when this message omits it.
+            history=state.get("history"),
         )
     )
 

@@ -131,6 +131,59 @@ def test_anonymous_ask_with_a_conversation_id_is_rejected(ctx, monkeypatch):
 
 
 # --------------------------------------------------------------------------
+# Invalid conversation ids
+# --------------------------------------------------------------------------
+
+
+def test_zero_conversation_id_is_a_422_not_a_sign_in_error(ctx, monkeypatch):
+    """`0` is not a real id (they start at 1), so it must fail validation.
+
+    The bug this guards: `0 is not None` is true, so an anonymous caller
+    sending 0 used to get 400 "Sign in to use conversation history" — a
+    misleading message that points at permissions rather than at the id.
+    """
+    http, _users, engine = ctx
+    calls = _stub_agent(monkeypatch)
+
+    response = http.post(
+        "/ask", json={"question": "What are visiting hours?", "conversation_id": 0}
+    )
+
+    assert response.status_code == 422
+    assert "Sign in" not in response.text
+    assert calls == []
+    assert _count(engine, Message) == 0
+
+
+def test_negative_conversation_id_is_rejected(ctx, monkeypatch):
+    http, users, _engine = ctx
+    calls = _stub_agent(monkeypatch)
+
+    response = http.post(
+        "/ask",
+        json={"question": "Hello?", "conversation_id": -1},
+        headers=_auth(users["alice"]),
+    )
+
+    assert response.status_code == 422
+    assert calls == []
+
+
+def test_conversation_id_must_be_an_integer(ctx, monkeypatch):
+    http, users, _engine = ctx
+    calls = _stub_agent(monkeypatch)
+
+    response = http.post(
+        "/ask",
+        json={"question": "Hello?", "conversation_id": "abc"},
+        headers=_auth(users["alice"]),
+    )
+
+    assert response.status_code == 422
+    assert calls == []
+
+
+# --------------------------------------------------------------------------
 # Persistence
 # --------------------------------------------------------------------------
 

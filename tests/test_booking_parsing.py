@@ -10,7 +10,7 @@ from datetime import date, timedelta
 
 import pytest
 
-from app.agent.tools.booking_tool import _parse_date, _parse_time
+from app.agent.tools.booking_tool import _find_doctor, _parse_date, _parse_time
 
 
 # --- Dates ---------------------------------------------------------------
@@ -92,3 +92,17 @@ def test_times_parse(text, expected):
 
 def test_time_absent_returns_none():
     assert _parse_time("with Dr. Sarah") is None
+
+
+# --- Doctor matching ------------------------------------------------------
+
+
+def test_find_doctor_matches_shortened_name():
+    """'sara' must resolve to Dr. Sarah — the booking flow matches the way
+    the database route does, or a discussed doctor is forgotten."""
+    from app.schema import Doctor
+
+    doctors = [Doctor(name="Dr. Sarah Ahmed", specialization="Cardiology")]
+
+    assert _find_doctor("dr.sara available on saturday at 4pm", doctors) is not None
+    assert _find_doctor("is anyone available at noon?", doctors) is None

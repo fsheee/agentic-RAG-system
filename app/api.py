@@ -1,3 +1,5 @@
+import os
+
 from fastapi import Depends, FastAPI, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
@@ -20,7 +22,13 @@ class AskRequest(BaseModel):
     question: str = Field(min_length=1)
     # Optional so existing clients keep working. Supplying one continues
     # that conversation; the caller must own it.
-    conversation_id: int | None = None
+    #
+    # ge=1 rejects 0 and negatives as malformed input (422). Without it a
+    # `conversation_id: 0` reaches the anonymous check below, where `0 is
+    # not None` is true and the caller is told "Sign in to use conversation
+    # history" — which reads like a permissions problem rather than a bad
+    # id. Real ids start at 1, so anything lower is a request error.
+    conversation_id: int | None = Field(default=None, ge=1)
 
 
 class Source(BaseModel):
@@ -37,9 +45,21 @@ class AskResponse(BaseModel):
 
 app = FastAPI(title="Agentic RAG API")
 
+# Real origins only: browsers reject a wildcard combined with
+# allow_credentials, and the frontend authenticates with a bearer token
+# sent from an explicit origin. Comma-separated, no spaces needed.
+# e.g. ALLOWED_ORIGINS=http://localhost:3000,https://app.example.com
+ALLOWED_ORIGINS = [
+    origin.strip()
+    for origin in os.getenv(
+        "ALLOWED_ORIGINS", "http://localhost:3000,http://127.0.0.1:3000"
+    ).split(",")
+    if origin.strip()
+]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=ALLOWED_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

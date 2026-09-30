@@ -80,6 +80,9 @@ def doctor_details(question: str) -> str | None:
         doctors = get_doctors(session)
 
     text = question.lower().replace("dr.", " ").replace("dr", " ")
+    # Words long enough to be a real name fragment; short ones ("4pm")
+    # would prefix-match too eagerly.
+    words = [word for word in text.split() if len(word) >= 4]
 
     matched = None
     for doctor in doctors:
@@ -89,7 +92,15 @@ def doctor_details(question: str) -> str | None:
             break
 
         tokens = [token for token in name.split() if len(token) > 3]
-        if tokens and any(token in text for token in tokens):
+        # Match a full name token, or a typed word that shares a prefix
+        # with one ("sara" -> "sarah"), so shortening and common typos
+        # still resolve to the doctor instead of falling back to the
+        # generic doctor list.
+        if tokens and any(
+            token in text
+            or any(word.startswith(token) or token.startswith(word) for word in words)
+            for token in tokens
+        ):
             matched = doctor
             break
 

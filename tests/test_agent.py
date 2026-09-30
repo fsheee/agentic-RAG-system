@@ -210,7 +210,7 @@ def test_booking_route_uses_booking_tool(monkeypatch, sqlite_engine):
     monkeypatch.setattr(
         graph.booking_tool,
         "run_booking",
-        lambda question, user=None, conversation_id=None: (
+        lambda question, user=None, conversation_id=None, history=None: (
             "You'd like to book. On which date and time?"
         ),
     )
@@ -475,3 +475,72 @@ def test_partial_progress_survives_between_turns(sqlite_engine):
         assert pending.start is not None
         assert pending.awaiting_confirmation is True
         assert booking_tool.is_awaiting_confirmation(conversation_id) is True
+
+
+def test_booking_infers_doctor_from_history(sqlite_engine):
+    """The doctor discussed in the previous turn carries into a booking
+    that does not name one: 'confirm my appointment tomorrow 11am' after
+    asking about dr.sara must not re-ask which doctor."""
+    from sqlmodel import Session
+
+    from app.agent.tools import booking_tool
+    from app.crud import create_conversation
+
+    _seed_doctor(sqlite_engine)
+
+    with Session(sqlite_engine) as session:
+        conversation = create_conversation(session, 1, "booking")
+        conversation_id = conversation.id
+
+    history = [
+        {"role": "user", "content": "dr.sara available on saturday at 4pm"},
+        {
+            "role": "assistant",
+            "content": "Dr. Sarah Ahmed (Cardiology) — weekly schedule.",
+        },
+    ]
+
+    answer = booking_tool.run_booking(
+        "confirm my appoinment tomorrow at 11am",
+        user=_user(),
+        conversation_id=conversation_id,
+        history=history,
+    )
+
+    assert "which doctor" not in answer.lower()
+    assert "Dr. Sarah Ahmed" in answer
+
+
+def test_booking_ignores_doctors_named_by_assistant(sqlite_engine):
+    """Only user messages count as context. An assistant reply listing the
+    doctors would otherwise pick an arbitrary one."""
+    from sqlmodel import Session
+
+    from app.agent.tools import booking_tool
+    from app.crud import create_conversation
+
+    _seed_doctor(sqlite_engine)
+
+    with Session(sqlite_engine) as session:
+        conversation = create_conversation(session, 1, "booking")
+        conversation_id = conversation.id
+
+    history = [
+        {"role": "user", "content": "I need an appointment"},
+        {
+            "role": "assistant",
+            "content": (
+                "Which doctor would you like to book with? Available: "
+                "Dr. Sarah Ahmed, Dr. Bilal Raza."
+            ),
+        },
+    ]
+
+    answer = booking_tool.run_booking(
+        "tomorrow at 11am",
+        user=_user(),
+        conversation_id=conversation_id,
+        history=history,
+    )
+
+    assert "which doctor" in answer.lower()

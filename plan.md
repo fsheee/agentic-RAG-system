@@ -3,7 +3,7 @@
 Status of the build: what exists today, what is left, and what is known to be
 imperfect. Kept in sync with the code rather than with the roadmap.
 
-Last updated: 2026-09-26
+Last updated: 2026-10-01
 
 ---
 
@@ -95,6 +95,15 @@ Qdrant holds vectors. They are not mixed.
 - `POST /ask` takes an optional `conversation_id` and returns one. Anonymous
   callers get no memory at all — supplying an id is a 400 and nothing is read
   or written.
+- **Anonymous callers are memory-less by design, and there is no guest
+  mechanism.** A guest calls the API with no JWT, reads public documents only
+  and is never persisted; signing in starts a new authenticated conversation.
+  A signed guest-token scheme (ownerless conversations, token in the response
+  body) was designed and deliberately **not** built — the frontend has no guest
+  login, so it would have added an id-claiming surface for a flow nothing uses.
+  Do not add `user_id = NULL` conversations: `Conversation.user_id` stays
+  non-nullable, and `get_conversation_for_user()`'s owner filter depends on it.
+  A malformed `conversation_id` (0 or negative) is a 422, not a 400.
 - History reaches the LLM through `AgentState` and the `{history}` prompt
   slot. `core.ask()` never imports the database, and the parameter is
   optional, so the CLI, `rag_chain` and the golden eval are unaffected.
@@ -156,6 +165,20 @@ availability rule shared by the agent workflow, reschedules and
 - `eval/golden_rag.json`, `eval/golden_router.json`,
   `eval/guardrail_cases.json`, covered by `tests/test_eval_*.py`.
 
+### Frontend
+
+- `frontend/` — Next.js (App Router) chat UI: `app/page.tsx` renders answers
+  with their cited sources, plus `app/login` and `app/register`.
+  `lib/auth.tsx` holds the token and `lib/api.ts` is the **single door** to the
+  backend — the frontend never talks to Qdrant, Neon or the LLM provider.
+- Conversation memory is signed-in only, matching the API: an anonymous visitor
+  sends *no* `conversation_id`, and the thread resets on sign-in and sign-out so
+  an id never crosses identities.
+- CORS is an explicit `ALLOWED_ORIGINS` allow-list rather than a wildcard, since
+  browsers reject `"*"` combined with `allow_credentials=True`.
+- `frontend/.gitignore` keeps `node_modules/`, `.next/` and `.env.local` out of
+  the repository.
+
 ---
 
 ## Required setup step
@@ -185,24 +208,18 @@ question, so *"what about the fees for that doctor?"* searches for that
 literal string and retrieves poorly. History informs the answer but does not
 rewrite the query. A condense step (one extra LLM call + prompt) is the fix.
 
-### 2. Next.js frontend
-
-Chat UI calling FastAPI; login/register; role-aware views; a real
-`conversation_id` per chat. The frontend never talks to Qdrant, Neon or the
-LLM provider directly — FastAPI is the only door.
-
-### 3. Docker
+### 2. Docker
 
 `Dockerfile` for FastAPI, `docker-compose.yml` for FastAPI + Qdrant. Neon
 stays managed cloud — no local Postgres container.
 
-### 4. CI/CD
+### 3. CI/CD
 
 GitHub Actions: lint → tests → Docker build. Must run the `app.seed`
 migration against a test database. Note there is currently **no linter
 configured** in `pyproject.toml`.
 
-### 5. Deployment
+### 4. Deployment
 
 FastAPI + Qdrant hosted; Neon connection string and JWT secret injected as
 environment variables — never committed.
@@ -216,9 +233,6 @@ environment variables — never committed.
   to drop `DELETE` and keep `PATCH status=cancelled`, since the codebase
   already models cancellation as a status (`crud.cancel_appointment`) and
   hard-deleting appointment history has audit implications. **Not settled.**
-- **CORS.** `allow_origins=["*"]` with `allow_credentials=True` in `app/api.py`
-  is rejected by browsers. Fine while there is no frontend; must become a real
-  origin before one ships.
 - **`GET /appointments` and `GET /admin/appointments` return identical data
   for an admin.** Kept because both were specified; one could be dropped.
 - **History is not summarised.** Very old context is simply forgotten — the
