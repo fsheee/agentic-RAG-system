@@ -1,4 +1,4 @@
-from app.core import ask
+from backend.app.core import ask
 
 
 def main():

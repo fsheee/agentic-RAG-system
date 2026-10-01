@@ -112,17 +112,23 @@ def _extract_text(response) -> str:
 
 UNKNOWN_ANSWER = "I don't know based on the provided documents."
 
-# Trailing "Sources: 1, 2" line the prompt asks the LLM to emit.
-SOURCES_LINE = re.compile(r"^sources?:\s*[\d\s,]+$", re.IGNORECASE)
+# Trailing "Sources: 1, 2" line the prompt asks the LLM to emit. The model
+# also writes "Sources:" or "Sources: None" when it cites nothing; those must
+# strip too, otherwise the line stays inside the answer, the answer stops
+# matching UNKNOWN_ANSWER, and the fallback below cites every retrieved
+# document for an answer that cites none.
+SOURCES_LINE = re.compile(r"^sources?:\s*(?:none|[\d\s,]*)\s*$", re.IGNORECASE)
 
 
-def _split_answer_and_sources(answer: str) -> tuple[str, list[int]]:
+def _split_answer_and_sources(answer: str) -> tuple[str, list[int] | None]:
     """
     Split a trailing "Sources: <numbers>" line off the answer.
 
-    Returns (answer, cited block numbers). An answer with no such line
-    yields an empty list — the caller then falls back to citing all
-    retrieved documents.
+    Returns (answer, cited block numbers):
+    - None  -> the model emitted no Sources line at all; the caller falls
+      back to citing every retrieved document.
+    - []    -> the model emitted "Sources:" / "Sources: None", i.e. it cited
+      nothing; the caller reports no sources.
     """
     lines = answer.strip().rsplit("\n", 1)
 
@@ -130,7 +136,7 @@ def _split_answer_and_sources(answer: str) -> tuple[str, list[int]]:
         numbers = re.findall(r"\d+", lines[1])
         return lines[0].strip(), [int(n) for n in numbers]
 
-    return answer.strip(), []
+    return answer.strip(), None
 
 
 def ask(
@@ -170,25 +176,27 @@ def ask(
         answer, cited = _split_answer_and_sources(_extract_text(response))
 
         # No grounded answer -> no citations. Retrieving a document is not
-        # the same as it supporting an answer.
-        if answer == UNKNOWN_ANSWER:
+        # the same as it supporting an answer. The same holds when the model
+        # explicitly cites nothing ("Sources: None").
+        if answer == UNKNOWN_ANSWER or cited == []:
             sources = []
+        elif cited is None:
+            # Model omitted the Sources line -> keep the previous behavior
+            # of citing every retrieved document. This is only safe because
+            # `documents` is already restricted to the caller's access tiers
+            # — anything that widens or re-merges this list (an unfiltered
+            # retry, a cache of another role's results) would turn this line
+            # into a leak.
+            sources = format_sources(documents)
         else:
             supported = [
                 documents[number - 1]
                 for number in cited
                 if 1 <= number <= len(documents)
             ]
-            # Model omitted the Sources line -> keep the previous
-            # behavior of citing every retrieved document. This is only
-            # safe because `documents` is already restricted to the
-            # caller's access tiers — anything that widens or re-merges
-            # this list (an unfiltered retry, a cache of another role's
-            # results) would turn this line into a leak.
-            if not supported:
-                supported = documents
-
-            sources = format_sources(supported)
+            # Numbers matching no retrieved block are meaningless; fall back
+            # to the same access-restricted list as above.
+            sources = format_sources(supported or documents)
 
         return {
             "answer": answer,

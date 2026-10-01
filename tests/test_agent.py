@@ -544,3 +544,83 @@ def test_booking_ignores_doctors_named_by_assistant(sqlite_engine):
     )
 
     assert "which doctor" in answer.lower()
+
+
+def test_conflict_reply_suggests_free_slots(sqlite_engine):
+    """A taken slot must not be a dead end: the reply shows what is still
+    open that day, so the user does not have to guess."""
+    from datetime import date, time, timedelta
+
+    from sqlmodel import Session
+
+    from app.agent.tools import booking_tool
+    from app.crud import create_conversation
+    from app.schema import Appointment, Patient
+
+    doctor_id = _seed_doctor(sqlite_engine)  # tomorrow 09:00-17:00
+    tomorrow = date.today() + timedelta(days=1)
+
+    with Session(sqlite_engine) as session:
+        patient = Patient(name="Other Patient", phone="")
+        session.add(patient)
+        session.flush()
+        session.add(
+            Appointment(
+                doctor_id=doctor_id,
+                patient_id=patient.id,
+                appointment_date=tomorrow,
+                start_time=time(11),
+                end_time=time(11, 30),
+            )
+        )
+        conversation = create_conversation(session, 1, "booking")
+        conversation_id = conversation.id
+
+    answer = booking_tool.run_booking(
+        "book with Dr. Sarah tomorrow at 11am",
+        user=_user(),
+        conversation_id=conversation_id,
+    )
+
+    assert "already has an appointment" in answer
+    assert "Free slots that day: 09:00-11:00, 11:30-17:00." in answer
+
+
+def test_conflict_reply_says_when_the_day_is_full(sqlite_engine):
+    from datetime import date, time, timedelta
+
+    from sqlmodel import Session
+
+    from app.agent.tools import booking_tool
+    from app.crud import create_conversation
+    from app.schema import Appointment, Patient
+
+    doctor_id = _seed_doctor(sqlite_engine)  # tomorrow 09:00-17:00
+    tomorrow = date.today() + timedelta(days=1)
+
+    with Session(sqlite_engine) as session:
+        patient = Patient(name="Other Patient", phone="")
+        session.add(patient)
+        session.flush()
+        for start, end in ((time(9), time(13)), (time(13), time(17))):
+            session.add(
+                Appointment(
+                    doctor_id=doctor_id,
+                    patient_id=patient.id,
+                    appointment_date=tomorrow,
+                    start_time=start,
+                    end_time=end,
+                )
+            )
+        conversation = create_conversation(session, 1, "booking")
+        conversation_id = conversation.id
+
+    answer = booking_tool.run_booking(
+        "book with Dr. Sarah tomorrow at 11am",
+        user=_user(),
+        conversation_id=conversation_id,
+    )
+
+    assert "already has an appointment" in answer
+    assert "No free slots left that day." in answer
+    assert "Free slots that day" not in answer

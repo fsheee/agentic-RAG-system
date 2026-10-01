@@ -24,6 +24,7 @@ from app.crud import (
     cancel_appointment,
     clear_pending_booking,
     find_conflicting_appointment,
+    get_doctor_appointments,
     get_doctor_schedule,
     get_doctors,
     get_patient_appointments,
@@ -263,6 +264,55 @@ def end_time_for(start: time) -> time:
 _DAY_NAMES_SHORT = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
 
 
+def free_slots_on(
+    session: Session,
+    doctor_id: int,
+    day: date,
+    exclude_appointment_id: int | None = None,
+) -> list[tuple[time, time]]:
+    """Open gaps in the doctor's schedule on `day`, after subtracting
+    booked appointments.
+
+    Used to suggest alternatives when the requested slot is already
+    taken, so the user is not told "no" without a next step.
+    `exclude_appointment_id` ignores the appointment being rescheduled —
+    the slot it vacates counts as free.
+    """
+    schedule = get_doctor_schedule(session, doctor_id)
+    windows = sorted(
+        (slot.start_time, slot.end_time)
+        for slot in schedule
+        if slot.day_of_week == day.weekday()
+    )
+    booked = sorted(
+        (
+            appointment
+            for appointment in get_doctor_appointments(session, doctor_id)
+            if appointment.appointment_date == day
+            and appointment.status == "booked"
+            and appointment.id != exclude_appointment_id
+        ),
+        key=lambda appointment: appointment.start_time,
+    )
+
+    free: list[tuple[time, time]] = []
+    for window_start, window_end in windows:
+        cursor = window_start
+        for appointment in booked:
+            if (
+                appointment.end_time <= window_start
+                or appointment.start_time >= window_end
+            ):
+                continue
+            if appointment.start_time > cursor:
+                free.append((cursor, min(appointment.start_time, window_end)))
+            cursor = max(cursor, appointment.end_time)
+        if cursor < window_end:
+            free.append((cursor, window_end))
+
+    return free
+
+
 def check_slot(
     session: Session,
     doctor_id: int,
@@ -300,10 +350,23 @@ def check_slot(
 
     conflict = find_conflicting_appointment(session, doctor_id, day, start, end)
     if conflict is not None and conflict.id != exclude_appointment_id:
-        return False, (
+        message = (
             f"Sorry, {doctor_name} already has an appointment at "
             f"{conflict.start_time} on {day}."
         )
+        # "No" without an alternative is a dead end: show what is still
+        # open that day instead of making the user guess.
+        free = free_slots_on(session, doctor_id, day, exclude_appointment_id)
+        if free:
+            suggestions = ", ".join(
+                f"{free_start.strftime('%H:%M')}-{free_end.strftime('%H:%M')}"
+                for free_start, free_end in free
+            )
+            message += f" Free slots that day: {suggestions}."
+        else:
+            message += " No free slots left that day."
+
+        return False, message
 
     return True, ""
 

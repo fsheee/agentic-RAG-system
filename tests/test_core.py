@@ -266,6 +266,30 @@ def test_ask_returns_no_sources_when_answer_is_unknown(monkeypatch):
     assert result["documents"] == _documents()  # documents still available for debugging
 
 
+def test_ask_strips_a_none_sources_line_from_the_unknown_answer(monkeypatch):
+    monkeypatch.setattr(core, "retrieve_documents", lambda q, **kwargs: _documents())
+    monkeypatch.setattr(
+        core,
+        "get_llm",
+        lambda: FakeLLM("I don't know based on the provided documents.\n\nSources: None"),
+    )
+
+    result = core.ask("unanswerable question")
+
+    assert result["answer"] == "I don't know based on the provided documents."
+    assert result["sources"] == []
+
+
+def test_ask_reports_no_sources_when_the_model_cites_none(monkeypatch):
+    monkeypatch.setattr(core, "retrieve_documents", lambda q, **kwargs: _documents())
+    monkeypatch.setattr(core, "get_llm", lambda: FakeLLM("answer\n\nSources: None"))
+
+    result = core.ask("any question")
+
+    assert result["answer"] == "answer"
+    assert result["sources"] == []
+
+
 def test_ask_cites_only_supported_documents(monkeypatch):
     monkeypatch.setattr(core, "retrieve_documents", lambda q, **kwargs: _documents())
     monkeypatch.setattr(

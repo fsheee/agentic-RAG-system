@@ -1,4 +1,5 @@
 import importlib
+from pathlib import Path
 
 import pytest
 
@@ -62,7 +63,19 @@ def test_uses_local_path_when_no_qdrant_url(monkeypatch):
 
     module.create_vector_store()
 
-    assert fake_client.kwargs["path"] == "qdrant_data"
+    # Anchored to the repo root (not cwd) so the API server, ingest and the
+    # CLI all open the same store.
+    assert Path(module.QDRANT_PATH).is_absolute()
+    assert Path(module.QDRANT_PATH) == Path(__file__).resolve().parents[1] / "qdrant_data"
+    assert fake_client.kwargs["path"] == str(module.QDRANT_PATH)
+
+
+def test_qdrant_path_env_override(monkeypatch):
+    monkeypatch.setenv("QDRANT_PATH", r"C:\custom\qdrant")
+
+    module = _reload(monkeypatch)
+
+    assert module.QDRANT_PATH == Path(r"C:\custom\qdrant")
 
 
 def test_uses_remote_url_when_set(monkeypatch):
