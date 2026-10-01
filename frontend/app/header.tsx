@@ -9,8 +9,11 @@ export default function Header() {
   return (
     <header className="border-b border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-950">
       <div className="mx-auto flex h-14 w-full max-w-3xl items-center justify-between px-4">
-        <Link href="/" className="font-semibold tracking-tight">
-          Agentic RAG
+        <Link href="/" className="flex items-center gap-2">
+          <span className="flex h-7 w-7 items-center justify-center rounded-lg bg-gradient-to-br from-indigo-500 to-violet-600 text-xs font-bold text-white shadow-sm shadow-indigo-500/30">
+            A
+          </span>
+          <span className="font-semibold tracking-tight">Agentic RAG</span>
         </Link>
 
         <nav className="flex items-center gap-4 text-sm">
@@ -43,7 +46,7 @@ export default function Header() {
               </Link>
               <Link
                 href="/register"
-                className="rounded-md bg-zinc-900 px-3 py-1.5 text-zinc-50 hover:bg-zinc-700 dark:bg-zinc-50 dark:text-zinc-900 dark:hover:bg-zinc-300"
+                className="rounded-md bg-indigo-600 px-3 py-1.5 text-zinc-50 hover:bg-indigo-500 dark:bg-indigo-500 dark:hover:bg-indigo-400"
               >
                 Register
               </Link>
