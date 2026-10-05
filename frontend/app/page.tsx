@@ -1,7 +1,8 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { ask, type Source } from "@/lib/api";
+import { useRouter } from "next/navigation";
+import { ask, type Role, type Source } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
 
 interface Message {
@@ -17,15 +18,62 @@ interface ChatState {
 
 const EMPTY_CHAT: ChatState = { messages: [], conversationId: null };
 
-const SUGGESTIONS = [
-  { label: "Visiting hours", question: "What are the hospital visiting hours?" },
-  { label: "Leave policy", question: "What is the annual leave policy for employees?" },
-  { label: "Facilities", question: "Which departments and facilities does the hospital have?" },
-  { label: "Emergency rules", question: "What is the procedure during a medical emergency?" },
+interface Suggestion {
+  label: string;
+  question: string;
+  // Roles allowed to ask this. Omitted = everyone, including anonymous
+  // visitors. Mirrors what the backend will actually answer, so a chip
+  // never promises an answer the caller cannot get:
+  // - documents: app/access.py (HR handbook is staff tier)
+  // - appointments: app/agent/graph.py APPOINTMENT_ROLES
+  roles?: readonly Role[];
+  // Short label on the chip when the signed-in role is not allowed.
+  badge?: string;
+  // Message shown if such a caller clicks the chip anyway.
+  restricted?: string;
+}
+
+const APPOINTMENT_ROLES: readonly Role[] = ["patient", "admin"];
+const STAFF_ROLES: readonly Role[] = ["doctor", "employee", "hr", "admin"];
+
+const SUGGESTIONS: Suggestion[] = [
+  { label: "Hospital Information", question: "What are the hospital visiting hours?" },
+  { label: "Doctors & Services", question: "Which doctors are available for dermatology?" },
+  { label: "Consultation Fees", question: "What is the consultation fee for a dermatologist?" },
+  {
+    label: "Appointments",
+    question: "Book an appointment with Dr. Bilal Raza.",
+    roles: APPOINTMENT_ROLES,
+    badge: "Patients & admins",
+    restricted: "Only patients and administrators can book appointments.",
+  },
+  {
+    label: "My Appointments",
+    question: "Show my upcoming appointments.",
+    roles: APPOINTMENT_ROLES,
+    badge: "Patients & admins",
+    restricted: "Only patients and administrators can view appointments.",
+  },
+  {
+    label: "Hospital Policies",
+    question: "What is the annual leave policy for employees?",
+    roles: STAFF_ROLES,
+    badge: "Staff only",
+    restricted: "Employee policies are available to staff accounts only.",
+  },
 ];
+
+// Anonymous visitors are sent to sign in; a signed-in caller with the
+// wrong role gets the chip's own `restricted` message instead.
+function blockReason(suggestion: Suggestion, user: { role: Role } | null): string | null {
+  if (!suggestion.roles) return null;
+  if (user && suggestion.roles.includes(user.role)) return null;
+  return user ? suggestion.restricted ?? "Not available for your role." : "Sign in to continue.";
+}
 
 export default function ChatPage() {
   const { user, token, loading } = useAuth();
+  const router = useRouter();
   const [chats, setChats] = useState<Record<string, ChatState>>({});
   const [input, setInput] = useState("");
   const [sending, setSending] = useState(false);
@@ -37,6 +85,26 @@ export default function ChatPage() {
   // from state instead of reset in an effect.
   const identity = loading ? "restoring" : user ? `user:${user.id}` : "anonymous";
   const chat = chats[identity] ?? EMPTY_CHAT;
+
+  // Every chip is listed; access is decided per click. An anonymous
+  // visitor is sent to sign in, a signed-in caller with the wrong role
+  // sees why. The backend enforces the same rules regardless — this only
+  // keeps the UI honest.
+  function handleSuggestion(suggestion: Suggestion) {
+    const blocked = blockReason(suggestion, user);
+
+    if (blocked && !user) {
+      router.push("/login");
+      return;
+    }
+
+    if (blocked) {
+      setError(blocked);
+      return;
+    }
+
+    send(suggestion.question);
+  }
 
   const updateChat = (next: (prev: ChatState) => ChatState) => {
     setChats((prev) => ({
@@ -142,26 +210,42 @@ export default function ChatPage() {
             </p>
             {!loading && !user && (
               <p className="mt-2 text-sm text-zinc-400 dark:text-zinc-500">
-                Sign in to keep your conversation history.
+                Sign in to keep your conversation history and to ask about
+                appointments and staff policies.
               </p>
             )}
 
             <div className="mt-8 grid w-full max-w-2xl gap-3 sm:grid-cols-2">
-              {SUGGESTIONS.map((suggestion) => (
-                <button
-                  key={suggestion.label}
-                  onClick={() => send(suggestion.question)}
-                  disabled={sending}
-                  className="group rounded-2xl border border-zinc-200 bg-white p-4 text-left transition hover:-translate-y-0.5 hover:border-indigo-300 hover:shadow-md disabled:opacity-60 dark:border-zinc-800 dark:bg-zinc-900 dark:hover:border-indigo-700"
-                >
-                  <span className="block text-sm font-medium group-hover:text-indigo-600 dark:group-hover:text-indigo-400">
-                    {suggestion.label}
-                  </span>
-                  <span className="mt-1 block text-sm text-zinc-500 dark:text-zinc-400">
-                    {suggestion.question}
-                  </span>
-                </button>
-              ))}
+              {!loading &&
+                SUGGESTIONS.map((suggestion) => {
+                  const blocked = blockReason(suggestion, user);
+                  const badge = blocked
+                    ? (user ? suggestion.badge ?? "Restricted" : "Sign in required")
+                    : null;
+
+                  return (
+                    <button
+                      key={suggestion.label}
+                      onClick={() => handleSuggestion(suggestion)}
+                      disabled={sending}
+                      className="group rounded-2xl border border-zinc-200 bg-white p-4 text-left transition hover:-translate-y-0.5 hover:border-indigo-300 hover:shadow-md disabled:opacity-60 dark:border-zinc-800 dark:bg-zinc-900 dark:hover:border-indigo-700"
+                    >
+                      <span className="flex items-center justify-between gap-2">
+                        <span className="text-sm font-medium group-hover:text-indigo-600 dark:group-hover:text-indigo-400">
+                          {suggestion.label}
+                        </span>
+                        {badge && (
+                          <span className="shrink-0 rounded-full bg-zinc-100 px-2 py-0.5 text-xs text-zinc-500 ring-1 ring-zinc-200 dark:bg-zinc-800 dark:text-zinc-400 dark:ring-zinc-700">
+                            {badge}
+                          </span>
+                        )}
+                      </span>
+                      <span className="mt-1 block text-sm text-zinc-500 dark:text-zinc-400">
+                        {suggestion.question}
+                      </span>
+                    </button>
+                  );
+                })}
             </div>
           </div>
         )}

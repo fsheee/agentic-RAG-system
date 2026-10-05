@@ -178,7 +178,12 @@ def booking_node(state: AgentState) -> dict:
 FEE_KEYWORDS = ("fee", "fees", "charge", "charges", "cost", "price")
 
 # Questions about viewing appointments inside the database node.
-APPOINTMENT_LIST_KEYWORDS = ("my appointment", "my appointments", "show appointment")
+APPOINTMENT_LIST_KEYWORDS = (
+    "my appointment",
+    "show appointment",
+    "upcoming appointment",
+    "list appointment",
+)
 
 
 def database_node(state: AgentState) -> dict:
