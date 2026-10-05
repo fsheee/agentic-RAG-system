@@ -4,9 +4,14 @@ from app.guardrails import sanitize_context
 from app.llm import get_llm
 from app.prompt import RAG_PROMPT
 from app.retriever import retrieve_documents
+from app.rewriter import CONDENSE_PROMPT, standalone_query
 
 
-def build_context(question: str, access: set[str] | None = None) -> tuple[list, list[str]]:
+def build_context(
+    question: str,
+    access: set[str] | None = None,
+    history: list[dict] | None = None,
+) -> tuple[list, list[str]]:
     """
     Retrieve relevant documents and build numbered context blocks.
 
@@ -17,11 +22,16 @@ def build_context(question: str, access: set[str] | None = None) -> tuple[list, 
     `access` is the set of document tiers the caller may read; see
     app/access.py. Callers serving a request must pass one.
 
+    `history` is prior turns as [{"role", "content"}] dicts. When present
+    the question is first rewritten into a standalone search query (see
+    rewrite_query), because a follow-up such as "what about the fees for
+    that doctor?" retrieves poorly as written.
+
     Blocks are numbered so the LLM can cite the ones it actually used —
     a retrieved-but-unused chunk (e.g. an HR handbook for a hospital
     location question) must not appear as a source.
     """
-    documents = retrieve_documents(question, access=access)
+    documents = retrieve_documents(rewrite_query(question, history), access=access)
 
     blocks = [
         f"[{i}] {sanitize_context(document.page_content)}"
@@ -71,6 +81,45 @@ def format_history(history: list[dict] | None) -> str:
         total += len(line)
 
     return "\n".join(reversed(lines))
+
+
+def rewrite_query(question: str, history: list[dict] | None) -> str:
+    """
+    Turn a follow-up question into a standalone retrieval query.
+
+    History informs retrieval, not just the answer: without this, "and on
+    weekends?" is embedded verbatim and matches nothing.
+
+    One extra LLM call, and only when there is history to resolve against —
+    the CLI, the golden eval and a first turn all pass none and keep their
+    previous single-call behaviour.
+
+    Deliberately fails open: if the call raises or the model produces
+    nothing usable, the original question is used rather than aborting a
+    request that could otherwise have been answered.
+
+    History is untrusted on replay, so it is rendered through
+    format_history (which sanitizes it) and the model's output is
+    normalised by standalone_query. The rewritten query is used only to
+    search with; the answer prompt still receives the question as the user
+    actually asked it.
+    """
+    if not history:
+        return question
+
+    try:
+        prompt = CONDENSE_PROMPT.invoke(
+            {
+                "history": format_history(history),
+                "question": question,
+            }
+        )
+        response = get_llm().invoke(prompt)
+
+        return standalone_query(_extract_text(response), question)
+    except Exception as e:
+        print(f"Query rewrite error: {e}")
+        return question
 
 
 def format_sources(documents: list) -> list[dict]:
@@ -157,11 +206,12 @@ def ask(
     never ORM objects, so this module stays free of any database import.
     It is optional: the CLI, the golden eval and rag_chain pass no history.
 
-    Retrieval still embeds `question` alone; history informs the answer, it
-    does not rewrite the query (see the plan's out-of-scope note).
+    Retrieval embeds a standalone rewrite of `question` when history is
+    present (see rewrite_query); the answer prompt still receives
+    `question` itself.
     """
     try:
-        documents, blocks = build_context(question, access=access)
+        documents, blocks = build_context(question, access=access, history=history)
 
         prompt = RAG_PROMPT.invoke(
             {

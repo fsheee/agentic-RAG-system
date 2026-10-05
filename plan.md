@@ -3,7 +3,7 @@
 Status of the build: what exists today, what is left, and what is known to be
 imperfect. Kept in sync with the code rather than with the roadmap.
 
-Last updated: 2026-10-01
+Last updated: 2026-10-06
 
 ---
 
@@ -11,10 +11,10 @@ Last updated: 2026-10-01
 
 Phase 1 (RAG foundation) is complete. Phase 2 (agentic orchestration) covers
 the agent, tools, guardrails, routing, Neon, auth, RBAC, document access
-control, conversation memory, the REST surface and evals. What remains is
-frontend, containers, CI and deployment.
+control, conversation memory, the REST surface, evals and the frontend.
+What remains is containers, CI and deployment.
 
-Test suite: **206 passing** (`uv run pytest -q`).
+Test suite: **235 passing** (`uv run pytest -q`).
 
 ---
 
@@ -110,6 +110,25 @@ Qdrant holds vectors. They are not mixed.
 - Windowed to the last 10 messages (limited in the query) and capped at 4000
   rendered characters, oldest dropped first. No summarisation.
 
+### Follow-up query rewriting
+
+- `app/rewriter.py` — `CONDENSE_PROMPT` plus `standalone_query()`, the
+  normaliser that turns the model's output into a usable search string.
+- `core.rewrite_query(question, history)` runs **one extra LLM call, and only
+  when history exists**, so the CLI, `rag_chain` and the golden eval keep
+  their previous single-call behaviour.
+- Retrieval embeds the rewritten query; the answer prompt still receives the
+  question as the user asked it. History reaches generation through the
+  `{history}` slot, unchanged.
+- Fails open: a failed call, an empty rewrite, or one that was nothing but a
+  filtered injection falls back to the original question. Rewriting is an
+  optimisation and must never fail a request that could have been answered.
+- Untrusted on both ends: history is rendered through `format_history()`
+  (already sanitized) and the model's output goes through `sanitize_context()`
+  and a 200-character cap before it is embedded.
+- One RAG implementation still: the rewrite lives in `core.build_context()`,
+  so every caller gets it. No node or route rewrites on its own.
+
 ### Booking state
 
 - `PendingBooking` in Neon, keyed by `conversation_id` (unique).
@@ -201,25 +220,18 @@ uv run python -m app.ingest  # required after any access-tier change
 
 Ordered by dependency; each step should land and be tested before the next.
 
-### 1. Follow-up query rewriting
-
-The weakest part of conversation memory. Retrieval still embeds the raw
-question, so *"what about the fees for that doctor?"* searches for that
-literal string and retrieves poorly. History informs the answer but does not
-rewrite the query. A condense step (one extra LLM call + prompt) is the fix.
-
-### 2. Docker
+### 1. Docker
 
 `Dockerfile` for FastAPI, `docker-compose.yml` for FastAPI + Qdrant. Neon
 stays managed cloud — no local Postgres container.
 
-### 3. CI/CD
+### 2. CI/CD
 
 GitHub Actions: lint → tests → Docker build. Must run the `app.seed`
 migration against a test database. Note there is currently **no linter
 configured** in `pyproject.toml`.
 
-### 4. Deployment
+### 3. Deployment
 
 FastAPI + Qdrant hosted; Neon connection string and JWT secret injected as
 environment variables — never committed.
@@ -227,6 +239,15 @@ environment variables — never committed.
 ---
 
 ## Open decisions and known rough edges
+
+- **The router still sees only the raw question.** The rewrite lives inside
+  `core.build_context()`, so routing is done without conversation context.
+  It holds up today: retrieval compensates (the rewrite runs before search),
+  and the booking route resolves the doctor from history via
+  `booking_tool.run_booking()`. Worth revisiting if a context-free follow-up
+  is misrouted.
+- **Every turn with history costs two LLM calls** (condense + answer). This is
+  the price of the rewrite and is not cached or batched.
 
 - **`PATCH` vs `DELETE` on `/admin/appointments/{id}`.** The user considers
   one redundant (both can make an appointment disappear). Recommendation was
