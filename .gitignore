@@ -11,3 +11,6 @@ wheels/
 .env
 
 qdrant_data/
+
+# Nested separate clone (own repo: agentic-RAG-system)
+agent-rag/
