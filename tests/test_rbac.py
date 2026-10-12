@@ -132,7 +132,9 @@ def test_appointment_listing_denied_for_employee(monkeypatch):
     _patch(monkeypatch, "database")
     called = []
     monkeypatch.setattr(
-        graph.booking_tool, "list_appointments", lambda u=None: called.append(u)
+        graph.booking_tool,
+        "list_appointments",
+        lambda u=None, **kwargs: called.append(u),
     )
 
     state = run_agent("Show my appointments", user=_user(Role.employee))
@@ -145,7 +147,9 @@ def test_appointment_listing_denied_for_anonymous(monkeypatch):
     _patch(monkeypatch, "database")
     called = []
     monkeypatch.setattr(
-        graph.booking_tool, "list_appointments", lambda u=None: called.append(u)
+        graph.booking_tool,
+        "list_appointments",
+        lambda u=None, **kwargs: called.append(u),
     )
 
     state = run_agent("Show my appointments")

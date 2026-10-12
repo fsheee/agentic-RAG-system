@@ -200,9 +200,9 @@ def database_node(state: AgentState) -> dict:
     # router sometimes sends cancel/reschedule here. This is checked
     # first so an unauthenticated request never reaches the booking
     # tools, which read a missing user as the seeded demo patient.
-    wants_appointment = any(
-        word in question
-        for word in booking_tool.CANCEL_WORDS + booking_tool.RESCHEDULE_WORDS
+    wants_appointment = booking_tool.matches_action_word(
+        question,
+        booking_tool.CANCEL_WORDS + booking_tool.RESCHEDULE_WORDS,
     ) or any(keyword in question for keyword in APPOINTMENT_LIST_KEYWORDS)
 
     if wants_appointment:
@@ -214,13 +214,23 @@ def database_node(state: AgentState) -> dict:
         if action is not None:
             return {"answer": action, "sources": []}
 
-        return {"answer": booking_tool.list_appointments(user), "sources": []}
+        return {
+            "answer": booking_tool.list_appointments(
+                user, upcoming_only="upcoming" in question
+            ),
+            "sources": [],
+        }
 
     if any(word in question for word in FEE_KEYWORDS):
-        return _fees_answer()
+        return _fees_answer(state)
 
-    # A specific doctor mentioned by name -> their details.
+    # A specific doctor mentioned by name -> their details. "what about her
+    # schedule" names nobody, so the referent comes from the conversation.
     details = db_tool.doctor_details(state["question"])
+    if details is None:
+        referenced = db_tool.referenced_doctor(state.get("history"))
+        if referenced is not None:
+            details = db_tool.format_doctor_details(referenced)
     if details is not None:
         return {"answer": details, "sources": []}
 
@@ -229,22 +239,53 @@ def database_node(state: AgentState) -> dict:
     if not doctors:
         return {"answer": "No doctors are currently registered.", "sources": []}
 
+    # The question named a specialty ("any general physician available?")
+    # -> only those doctors, not the whole directory.
+    by_specialty = db_tool.find_by_specialization(state["question"], doctors)
+    if by_specialty is not None:
+        doctors, specializations = by_specialty
+        header = ", ".join(specializations)
+    else:
+        header = "Registered"
+
     lines = [
         f"- {doctor['name']} ({doctor['specialization']})"
         for doctor in doctors
     ]
 
     return {
-        "answer": "Registered doctors:\n" + "\n".join(lines),
+        "answer": f"{header} doctors:\n" + "\n".join(lines),
         "sources": [],
     }
 
 
-def _fees_answer() -> dict:
-    fees = db_tool.get_consultation_fees()
+def _fees_answer(state: AgentState) -> dict:
+    """Fees for the doctor the question is about, else for everyone.
+
+    A fee question rarely names its subject — "what her fee" follows the
+    doctor the previous turn listed. The doctor named in the question wins,
+    then the one the conversation is already about; when neither resolves
+    (a bare "what are the consultation fees?", or a previous answer that
+    listed several doctors) the full list is the right answer.
+    """
+    doctor = db_tool.named_doctor(state["question"]) or db_tool.referenced_doctor(
+        state.get("history")
+    )
+
+    fees = (
+        db_tool.get_consultation_fees(doctor["id"])
+        if doctor is not None
+        else db_tool.get_consultation_fees()
+    )
 
     if not fees:
         return {"answer": "No doctors are currently registered.", "sources": []}
+
+    header = (
+        f"Consultation fee for {doctor['name']}:"
+        if doctor is not None
+        else "Consultation fees:"
+    )
 
     lines = []
     for fee in fees:
@@ -256,7 +297,7 @@ def _fees_answer() -> dict:
             )
 
     return {
-        "answer": "Consultation fees:\n" + "\n".join(lines),
+        "answer": header + "\n" + "\n".join(lines),
         "sources": [],
     }
 

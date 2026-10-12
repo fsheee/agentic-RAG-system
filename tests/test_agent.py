@@ -1,9 +1,11 @@
+from datetime import time
+
 import pytest
 from sqlalchemy.pool import StaticPool
-from sqlmodel import SQLModel, create_engine
+from sqlmodel import Session, SQLModel, create_engine
 
 from app.agent import graph, run_agent
-from app.schema import Role, User
+from app.schema import Appointment, Doctor, Patient, Role, User
 
 
 def _user(role=Role.patient, user_id=1):
@@ -86,6 +88,26 @@ def test_database_route_lists_doctors(monkeypatch):
     assert state["sources"] == []
 
 
+def test_database_route_narrows_to_named_specialty(monkeypatch):
+    # The reported bug: "name of general physician doctor" answered with
+    # every registered doctor instead of the one asked about.
+    _patch(
+        monkeypatch,
+        "database",
+        doctors=[
+            {"id": 1, "name": "Dr. Sarah Ahmed", "specialization": "Cardiology"},
+            {"id": 2, "name": "Dr. Fatima Noor", "specialization": "General Medicine"},
+        ],
+    )
+
+    state = run_agent("name of general physician doctor")
+
+    assert state["route"] == "database"
+    assert "Dr. Fatima Noor" in state["answer"]
+    assert "Dr. Sarah Ahmed" not in state["answer"]
+    assert state["sources"] == []
+
+
 def test_database_route_answers_fee_questions(monkeypatch):
     _patch(monkeypatch, "database")
     monkeypatch.setattr(
@@ -104,6 +126,167 @@ def test_database_route_answers_fee_questions(monkeypatch):
     assert "Dr. A (Cardiology): PKR 3000" in state["answer"]
     assert "Dr. B (Neurology): fee not set" in state["answer"]
     assert state["sources"] == []
+
+
+def test_fee_question_resolves_doctor_from_history(monkeypatch, sqlite_engine):
+    """'what her fee' names nobody: the subject comes from the turn that
+    listed the doctor, so the answer is her fee, not the whole table."""
+    from app.agent.tools import db_tool
+
+    monkeypatch.setattr(db_tool, "get_engine", lambda: sqlite_engine)
+    _patch(monkeypatch, "database")
+
+    with Session(sqlite_engine) as session:
+        session.add(
+            Doctor(name="Dr. Sarah Ahmed", specialization="Cardiology", consultation_fee=3000)
+        )
+        session.add(
+            Doctor(name="Dr. Fatima Noor", specialization="General Medicine", consultation_fee=1500)
+        )
+        session.commit()
+
+    state = run_agent(
+        "what her fee",
+        history=[
+            {"role": "user", "content": "any general physician available"},
+            {
+                "role": "assistant",
+                "content": "General Medicine doctors:\n- Dr. Fatima Noor (General Medicine)",
+            },
+        ],
+    )
+
+    assert state["route"] == "database"
+    assert "Dr. Fatima Noor (General Medicine): PKR 1500" in state["answer"]
+    assert "Dr. Sarah Ahmed" not in state["answer"]
+    assert state["sources"] == []
+
+
+def test_fee_question_names_doctor_directly(monkeypatch, sqlite_engine):
+    """A fee question that does name its doctor answers that doctor only."""
+    from app.agent.tools import db_tool
+
+    monkeypatch.setattr(db_tool, "get_engine", lambda: sqlite_engine)
+    _patch(monkeypatch, "database")
+
+    with Session(sqlite_engine) as session:
+        session.add(
+            Doctor(name="Dr. Sarah Ahmed", specialization="Cardiology", consultation_fee=3000)
+        )
+        session.add(
+            Doctor(name="Dr. Fatima Noor", specialization="General Medicine", consultation_fee=1500)
+        )
+        session.commit()
+
+    state = run_agent("What is Dr. Sarah Ahmed's consultation fee?")
+
+    assert "Consultation fee for Dr. Sarah Ahmed:" in state["answer"]
+    assert "PKR 3000" in state["answer"]
+    assert "Dr. Fatima Noor" not in state["answer"]
+
+
+def test_fee_question_keeps_full_list_when_history_lists_several(
+    monkeypatch, sqlite_engine
+):
+    """A previous answer that listed the whole directory is not a
+    referent — one arbitrary doctor must not be picked out of it."""
+    from app.agent.tools import db_tool
+
+    monkeypatch.setattr(db_tool, "get_engine", lambda: sqlite_engine)
+    _patch(monkeypatch, "database")
+
+    with Session(sqlite_engine) as session:
+        session.add(
+            Doctor(name="Dr. Sarah Ahmed", specialization="Cardiology", consultation_fee=3000)
+        )
+        session.add(
+            Doctor(name="Dr. Bilal Raza", specialization="Dermatology", consultation_fee=2500)
+        )
+        session.commit()
+
+    state = run_agent(
+        "what are the fees",
+        history=[
+            {
+                "role": "assistant",
+                "content": "Registered doctors:\n- Dr. Sarah Ahmed (Cardiology)\n- Dr. Bilal Raza (Dermatology)",
+            }
+        ],
+    )
+
+    assert "Dr. Sarah Ahmed (Cardiology): PKR 3000" in state["answer"]
+    assert "Dr. Bilal Raza (Dermatology): PKR 2500" in state["answer"]
+
+
+def test_upcoming_appointments_asked_by_name(monkeypatch, sqlite_engine):
+    """'upcoming' must reach the tool: a listing that includes a booking
+    from last week answers a question nobody asked."""
+    _patch(monkeypatch, "database")
+    seen = {}
+    monkeypatch.setattr(
+        graph.booking_tool,
+        "list_appointments",
+        lambda user=None, upcoming_only=False: seen.setdefault("upcoming", upcoming_only)
+        and "ok",
+    )
+
+    state = run_agent("Show my upcoming appointments", user=_user())
+
+    assert state["route"] == "database"
+    assert seen["upcoming"] is True
+
+
+def test_list_appointments_upcoming_drops_past_and_cancelled(sqlite_engine):
+    """The filter itself: 'upcoming' means today or later, and a cancelled
+    booking is not something the patient is still going to."""
+    from datetime import date, timedelta
+
+    from app.agent.tools import booking_tool
+
+    with Session(sqlite_engine) as session:
+        doctor = Doctor(name="Dr. Sarah Ahmed", specialization="Cardiology")
+        session.add(doctor)
+        session.flush()
+        patient = Patient(name="Ali Khan", phone="", user_id=1)
+        session.add(patient)
+        session.flush()
+
+        session.add(
+            Appointment(
+                doctor_id=doctor.id,
+                patient_id=patient.id,
+                appointment_date=date.today() - timedelta(days=7),
+                start_time=time(11),
+                end_time=time(11, 30),
+            )
+        )
+        session.add(
+            Appointment(
+                doctor_id=doctor.id,
+                patient_id=patient.id,
+                appointment_date=date.today() + timedelta(days=3),
+                start_time=time(9),
+                end_time=time(9, 30),
+                status="cancelled",
+            )
+        )
+        upcoming = Appointment(
+            doctor_id=doctor.id,
+            patient_id=patient.id,
+            appointment_date=date.today() + timedelta(days=5),
+            start_time=time(14),
+            end_time=time(14, 30),
+        )
+        session.add(upcoming)
+        session.commit()
+        upcoming_id = upcoming.id
+
+    answer = booking_tool.list_appointments(_user(), upcoming_only=True)
+
+    assert f"#{upcoming_id}" in answer
+    assert "cancelled" not in answer
+    # The past appointment's date must not appear either.
+    assert str(date.today() - timedelta(days=7)) not in answer
 
 
 def test_out_of_scope_questions_fall_back_to_rag(monkeypatch):
@@ -154,7 +337,9 @@ def test_database_route_lists_appointments(monkeypatch, sqlite_engine):
     monkeypatch.setattr(
         graph.booking_tool,
         "list_appointments",
-        lambda user=None: "Ali Khan's appointments:\n- #3: Dr. A on 2026-09-07",
+        lambda user=None, upcoming_only=False: (
+            "Ali Khan's appointments:\n- #3: Dr. A on 2026-09-07"
+        ),
     )
 
     state = run_agent("Show my appointments", user=_user())

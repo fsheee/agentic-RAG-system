@@ -1,0 +1,21 @@
+[
+  {"question": "What is the probation period?", "route": "rag"},
+  {"question": "What are the hospital visiting hours?", "route": "rag"},
+  {"question": "What does the HR policy say about annual leave?", "route": "rag"},
+  {"question": "What does the leave policy say about sick leave?", "route": "rag"},
+  {"question": "Are children allowed to visit patients?", "route": "rag"},
+  {"question": "What are the visiting hours on weekends?", "route": "rag"},
+  {"question": "What is the emergency contact number?", "route": "rag"},
+  {"question": "Which doctors are available?", "route": "database"},
+  {"question": "Show me Dr. Sarah Ahmed's schedule.", "route": "database"},
+  {"question": "Can I book an appointment with a cardiologist?", "route": "database"},
+  {"question": "What is the consultation fee for Dr. Fatima Noor?", "route": "database"},
+  {"question": "Does Dr. Sarah Ahmed work on Saturday?", "route": "database"},
+  {"question": "name of general physician doctor", "route": "database"},
+  {"question": "Show my upcoming appointments", "route": "database"},
+  {"question": "What is the consultation fee for a cardiologist?", "route": "database"},
+  {"question": "Can I cancel my appointment?", "route": "booking"},
+  {"question": "Reschedule my appointment to Friday", "route": "booking"},
+  {"question": "Book an appointment with Dr. Usman Tariq", "route": "booking"},
+  {"question": "cancle my appointment with dr.sara on 19th oct", "route": "booking"}
+]

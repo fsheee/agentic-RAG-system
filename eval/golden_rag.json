@@ -1,0 +1,67 @@
+[
+  {
+    "question": "What is the probation period?",
+    "expected_source": "hr_policy.txt",
+    "answer_contains": ["probation", "month"]
+  },
+  {
+    "question": "What are the hospital visiting hours?",
+    "expected_source": "hospital_info.pdf",
+    "answer_contains": ["9", "7"]
+  },
+  {
+    "question": "What is the hospital's emergency contact procedure?",
+    "expected_source": "hospital_info.pdf",
+    "answer_contains": []
+  },
+  {
+    "question": "What should an employee do before leaving the job?",
+    "expected_source": "hr_policy.txt",
+    "answer_contains": ["clearance"]
+  },
+  {
+    "question": "How many days of paid annual leave do employees get?",
+    "expected_source": "hr_policy.txt",
+    "answer_contains": ["20"]
+  },
+  {
+    "question": "How long is the notice period during probation?",
+    "expected_source": "hr_policy.txt",
+    "answer_contains": ["15"]
+  },
+  {
+    "question": "How many days per week can employees work from home?",
+    "expected_source": "hr_policy.txt",
+    "answer_contains": ["2"]
+  },
+  {
+    "question": "How many public holidays does the company observe each year?",
+    "expected_source": "hr_policy.txt",
+    "answer_contains": ["12"]
+  },
+  {
+    "question": "How many visitors are allowed per patient at one time?",
+    "expected_source": "hospital_info.pdf",
+    "answer_contains": ["2"]
+  },
+  {
+    "question": "Where is the hospital located?",
+    "expected_source": "hospital_info.pdf",
+    "answer_contains": ["Karachi"]
+  },
+  {
+    "question": "What identification should a patient present at check-in?",
+    "expected_source": "hospital_policy.pdf",
+    "answer_contains": []
+  },
+  {
+    "question": "What are patients expected to do before their appointment time?",
+    "expected_source": "hospital_policy.pdf",
+    "answer_contains": []
+  },
+  {
+    "question": "What is the capital of France?",
+    "expected_source": null,
+    "answer_contains": ["don't know"]
+  }
+]

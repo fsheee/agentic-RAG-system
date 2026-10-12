@@ -17,7 +17,10 @@ def get_engine():
     if _engine is None:
         if not DATABASE_URL:
             raise ValueError("DATABASE_URL is missing from .env")
-        _engine = create_engine(DATABASE_URL)
+        # pool_pre_ping: Neon drops idle connections, and a stale one from
+        # the pool fails the next query with "SSL connection closed" instead
+        # of being replaced transparently.
+        _engine = create_engine(DATABASE_URL, pool_pre_ping=True)
     return _engine
 
 
