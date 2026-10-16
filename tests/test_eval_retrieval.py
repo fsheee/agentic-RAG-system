@@ -27,14 +27,28 @@ def _retrieval_enabled() -> bool:
 @pytest.mark.skipif(not _retrieval_enabled(), reason="Qdrant/knowledge base unavailable")
 def test_retrieval_hit_rate():
     hits = 0
+    misses = []
 
     for case in GOLDEN:
         documents = retrieve_documents(case["question"])
-        if any(
-            document.metadata.get("source", "").endswith(case["expected_source"])
-            for document in documents
-        ):
+        sources = [document.metadata.get("source", "") for document in documents]
+        expected = case["expected_source"]
+
+        # expected_source: null marks a question the knowledge base cannot
+        # answer. The relevance threshold must drop everything there —
+        # retrieving an off-topic chunk is a miss, not a near miss.
+        if expected is None:
+            if not documents:
+                hits += 1
+            else:
+                misses.append(f"{case['question']!r}: retrieved {sources}")
+        elif any(source.endswith(expected) for source in sources):
             hits += 1
+        else:
+            misses.append(f"{case['question']!r}: expected {expected}, got {sources}")
 
     hit_rate = hits / len(GOLDEN)
-    assert hit_rate >= MIN_HIT_RATE, f"Retrieval hit rate {hit_rate:.2f} < {MIN_HIT_RATE}"
+    assert hit_rate >= MIN_HIT_RATE, (
+        f"Retrieval hit rate {hit_rate:.2f} < {MIN_HIT_RATE}. "
+        f"Misses:\n" + "\n".join(misses)
+    )

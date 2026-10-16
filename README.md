@@ -1,112 +1,147 @@
-# Agentic RAG System
+# Agentic RAG Backend
 
-A healthcare assistant built as an **Agentic RAG** system, developed in two phases in a single repository:
+Backend for a healthcare assistant that answers questions from a hospital
+knowledge base, queries relational data, and books appointments. Built as an
+**Agentic RAG** system in two layers over one repository:
 
-- **Phase 1 — Basic RAG:** retrieval-augmented answering over a hospital knowledge base (Qdrant + LLM) with source citations.
-- **Phase 2 — Agentic RAG:** a LangGraph agent that routes questions between the RAG core, relational data (Neon PostgreSQL), and an appointment-booking workflow — exposed through a FastAPI API.
+- **RAG core** — retrieval-augmented answering over hospital documents
+  (Qdrant + LLM) with grounded source citations.
+- **Agent layer** — a LangGraph agent that routes each question between the
+  RAG core, relational data (PostgreSQL), and a multi-step appointment
+  booking workflow, served through FastAPI.
+
+The backend also exposes JWT auth, role-based access control, conversation
+memory, and plain REST CRUD for doctors and appointments.
+
+> This document covers the **backend only**. There is no frontend in scope
+> here; the API is a plain HTTP service consumed by any client.
+
+---
 
 ## Architecture
 
+### Request flow
+
 ```
-                         User
-                          │
-                       FastAPI (POST /ask)
-                          │
-                       LangGraph
-                          │
-                 ┌────────┼─────────────┐
-                 │        │             │
-             Guardrail  Router      Validation
-                          │
-            ┌─────────────┼─────────────┐
-            ▼             ▼             ▼
-        RAG Tool      Database Tool   Booking Tool
-            │             │             │
-            ▼             ▼             ▼
-   Phase 1 core.py    Neon          Neon (doctors,
-   Qdrant retrieval   PostgreSQL    schedules, patients,
-                                       appointments)
-            │
-            ▼
-      Answer + Sources
+                       Client
+                         │
+                FastAPI (POST /ask)
+                         │
+                    LangGraph
+                         │
+   Guardrail ─▸ Rewrite ─▸ Router ─▸ Validate
+                              │
+       ┌──────────────────────┼──────────────────────┐
+       ▼                      ▼                      ▼
+    RAG Tool           Database Tool           Booking Tool
+       │                      │                      │
+       ▼                      ▼                      ▼
+ core.py / Qdrant        PostgreSQL             PostgreSQL
+       │                                     (doctors, schedules,
+       ▼                                      patients, appointments)
+ Answer + Sources        (Validate drops ungrounded RAG answers)
 ```
 
-### Phase 1 — RAG pipeline
+The graph runs `START → guardrail → rewrite → router → rag|database|booking → validate → END`.
+Role and identity always come from the signed JWT and are enforced in Python
+(graph nodes + the Qdrant retrieval filter) — never by the LLM.
+
+### RAG pipeline
 
 ```
 knowledge_base/ (PDF/TXT)
-  ↓  loader.py
-  ↓  splitter.py (chunk 500, overlap 100)
-  ↓  embedding.py (all-MiniLM-L6-v2)
-  ↓  ingest.py (deterministic IDs → idempotent upsert)
+  ↓  loader.py     load + attach access tier to metadata
+  ↓  splitter.py   chunk 500 / overlap 100
+  ↓  embedding.py  all-MiniLM-L6-v2
+  ↓  ingest.py     deterministic IDs → idempotent upsert + stale pruning
 Qdrant
-  ↓  retriever.py (top-k + relevance thresholds)
-  ↓  core.py (context, prompt, LLM)
+  ↓  retriever.py  top-k + access filter + relevance thresholds
+  ↓  core.py       context → RAG prompt → LLM → answer + citations
 Answer + Sources
 ```
 
-`app/core.py` is the **single reusable RAG entry point** (`ask(question) -> {answer, sources, documents}`). Every consumer — CLI, API, LangGraph nodes — goes through it; there is no second RAG implementation.
+`backend/app/core.py` is the **single reusable RAG entry point**
+(`ask(question) -> {answer, sources, documents}`). The CLI, the API, and the
+agent's RAG tool all go through it; there is no second RAG implementation.
 
-### Phase 2 — Agent graph
+### Routes
 
-```
-START → Guardrail → Router → rag / database / booking → Validate → END
-```
-
-| Route | Handles | Tool |
+| Route | Handles | Backed by |
 | --- | --- | --- |
 | `rag` | hospital policies, visiting hours, HR rules, general questions | `rag_tool` → `core.ask()` → Qdrant |
-| `database` | doctor list, consultation fees, doctor details, viewing appointments | `db_tool` → Neon PostgreSQL |
-| `booking` | book / cancel / reschedule appointments | `booking_tool` → Neon PostgreSQL |
+| `database` | doctor list, specializations, consultation fees, doctor details, viewing appointments | `db_tool` → PostgreSQL |
+| `booking` | book / cancel / reschedule appointments | `booking_tool` → PostgreSQL |
 
-**Booking is a multi-step workflow** (its own LangGraph subgraph with state): parse → check availability (schedule + conflicts) → ask for confirmation → create the appointment **only after an explicit "yes"**. Pending state carries across turns.
+**Booking is a multi-step workflow** (its own LangGraph subgraph): parse →
+check availability (weekly schedule + conflicts) → ask for confirmation →
+create the appointment **only after an explicit "yes"**. Pending state is
+stored in PostgreSQL keyed by conversation, so a half-finished booking
+survives a restart and is shared across workers.
 
-**Guardrails:** user input is screened for prompt injection before routing, and retrieved documents are treated as untrusted data — instructions inside them are sanitized and never override system instructions.
+---
 
-## Components
+## Project layout
 
-| Module | Purpose |
-| --- | --- |
-| `app/loader.py` | Loads PDF (`PyPDFLoader`) and TXT (line-based pseudo-pages) files from `knowledge_base/` |
-| `app/splitter.py` | Recursive text splitter (chunk size 500, overlap 100) |
-| `app/embedding.py` | `sentence-transformers/all-MiniLM-L6-v2` embeddings |
-| `app/vectorstore.py` | Qdrant vector store (remote via `QDRANT_URL` or local mode), cosine distance |
-| `app/retriever.py` | Top-k similarity search with absolute + relative relevance filters |
-| `app/ingest.py` | **Idempotent** ingestion: deterministic chunk IDs (upsert, no duplicates) + stale-vector pruning |
-| `app/prompt.py` | RAG prompt: answer only from context, numbered blocks, cite used sources, treat documents as data |
-| `app/llm.py` | Groq `ChatGroq` or Gemini `ChatGoogleGenerativeAI` (temperature 0) |
-| `app/core.py` | Single RAG entry point: `ask()`, `build_context()`, `format_sources()` |
-| `app/rag_chain.py` | Compatibility layer delegating to `core.ask()` |
-| `app/guardrails.py` | Input screening + context sanitization (prompt-injection protection) |
-| `app/schema.py` | SQLModel tables: `Doctor`, `DoctorSchedule`, `Patient`, `Appointment` |
-| `app/db.py`, `app/crud.py` | Neon PostgreSQL engine and parameterized CRUD |
-| `app/seed.py` | Idempotent sample-data seeding (doctors, schedules, patient, fees) + column migrations |
-| `app/agent/graph.py` | LangGraph orchestration: guardrail → router → tools → validation |
-| `app/agent/state.py` | Typed agent state |
-| `app/agent/tools/rag_tool.py` | Thin tool delegating to `core.ask()` |
-| `app/agent/tools/db_tool.py` | Doctors, consultation fees, doctor details (Neon) |
-| `app/agent/tools/booking_tool.py` | Multi-step booking workflow + cancel/reschedule/list (Neon) |
-| `app/api.py` | FastAPI `POST /ask` |
+```
+agent-rag/
+├── backend/app/
+│   ├── api.py               FastAPI app: /ask, /health, middleware
+│   ├── auth.py              bcrypt hashing + JWT helpers
+│   ├── auth_routes.py       /auth/* endpoints + role dependencies
+│   ├── appointment_routes.py REST CRUD for doctors & appointments
+│   ├── access.py            knowledge-base access tiers (public/staff)
+│   ├── config.py            env-driven settings (thresholds, offline mode)
+│   ├── core.py              single RAG entry point (ask/build_context)
+│   ├── crud.py              parameterized DB access
+│   ├── db.py                SQLModel engine + session dependency
+│   ├── embedding.py         HuggingFace embeddings
+│   ├── guardrails.py        injection screening + context sanitization
+│   ├── ingest.py            idempotent Qdrant ingestion
+│   ├── llm.py               Groq / Gemini client (temperature 0)
+│   ├── loader.py            PDF/TXT loading with pseudo-pages
+│   ├── prompt.py            RAG prompt
+│   ├── retriever.py         top-k retrieval with access + score filters
+│   ├── rewriter.py          follow-up → standalone search query
+│   ├── schema.py            SQLModel tables
+│   ├── seed.py              idempotent sample data + column migrations
+│   ├── splitter.py          recursive text splitter
+│   ├── vectorstore.py       Qdrant vector store (remote or local)
+│   └── agent/
+│       ├── graph.py         LangGraph orchestration
+│       ├── state.py         typed agent state
+│       └── tools/
+│           ├── rag_tool.py       delegates to core.ask()
+│           ├── db_tool.py        doctors / fees / details
+│           └── booking_tool.py   booking workflow + cancel/reschedule
+├── knowledge_base/          hospital_info.pdf, hospital_policy.pdf, hr_policy.txt
+├── eval/                    golden sets (router, RAG answers, guardrails)
+├── tests/                   pytest suite
+├── main.py                  Phase-1 CLI (RAG only)
+├── pyproject.toml
+└── .env.example
+```
 
-## Getting Started
+---
 
-### Prerequisites
+## Requirements
 
 - Python 3.11+
 - [uv](https://docs.astral.sh/uv/) (recommended) or pip
-- A Neon PostgreSQL database (for the agent's relational data)
+- A PostgreSQL database (a managed Neon instance works out of the box)
+- An LLM API key (Groq or Google Gemini)
 
-### Installation
+---
+
+## Getting started
+
+### 1. Install
 
 ```bash
-git clone <repo-url>
-cd agent-rag
-uv sync          # or: pip install -e .
+uv sync
+# or: pip install -e .
 ```
 
-### Configuration
-
-Copy `.env.example` to `.env` and fill in your keys:
+### 2. Configure
 
 ```bash
 cp .env.example .env
@@ -115,36 +150,143 @@ cp .env.example .env
 | Variable | Description | Default |
 | --- | --- | --- |
 | `GROQ_API_KEY` | Groq API key | — |
-| `MODEL_NAME` | Groq model to use | `openai/gpt-oss-120b` |
-| `GOOGLE_API_KEY` | Google/Gemini API key (switches LLM to Gemini when set) | — |
-| `GEMINI_MODEL` | Gemini model to use | `gemini-3.1-flash-lite` |
+| `MODEL_NAME` | Groq model | `openai/gpt-oss-120b` |
+| `GOOGLE_API_KEY` | Gemini key — when set, the LLM switches to Gemini | — |
+| `GEMINI_MODEL` | Gemini model | `gemini-3.1-flash-lite` |
 | `EMBEDDING_MODEL` | HuggingFace embedding model | `sentence-transformers/all-MiniLM-L6-v2` |
+| `DATABASE_URL` | PostgreSQL connection string | — |
+| `POOL_RECYCLE_SECONDS` / `POOL_SIZE` / `POOL_MAX_OVERFLOW` / `POOL_TIMEOUT_SECONDS` | Connection-pool tuning (`pool_pre_ping` is always on) | `1800` / `5` / `10` / `30` |
+| `JWT_SECRET` | HMAC secret for signing tokens | — |
+| `JWT_EXPIRE_MINUTES` | Token lifetime | `60` |
+| `ADMIN_EMAIL` / `ADMIN_PASSWORD` | Initial admin created by the seed script | — |
 | `QDRANT_URL` | Qdrant server URL; empty = local mode (`qdrant_data/`) | — |
 | `QDRANT_COLLECTION_PREFIX` | Prefix for the Qdrant collection name | — |
-| `DATABASE_URL` | Neon PostgreSQL connection string | — |
-| `RETRIEVAL_THRESHOLD` | Minimum relevance score for retrieved chunks | `0.65` |
+| `QDRANT_PATH` | Local-mode Qdrant folder | `<repo>/qdrant_data` |
+| `RETRIEVAL_THRESHOLD` | Minimum relevance score for a chunk to be used | `0.65` |
 | `SCORE_MARGIN` | Max score drop from the best match | `0.10` |
-| `LANGSMITH_*` | LangSmith tracing (optional) | — |
+| `ALLOWED_ORIGINS` | CORS origins (comma-separated) | `http://localhost:3000,http://127.0.0.1:3000` |
+| `RATE_LIMIT_PER_MINUTE` | Per-IP request window (all paths except `/health`) | `60` |
+| `MAX_REQUEST_BODY_BYTES` | Requests above this size are rejected with `413` | `1048576` (1 MiB) |
+| `LLM_TIMEOUT_SECONDS` / `LLM_MAX_RETRIES` | Per-attempt LLM timeout / retries | `60` / `2` |
+| `LOG_LEVEL` | App log level | `INFO` |
+| `LANGSMITH_TRACING` / `LANGSMITH_API_KEY` / `LANGSMITH_PROJECT` | LangSmith tracing (optional) | — |
 
-### Ingest the Knowledge Base
+`JWT_SECRET` is required to serve the API, and an embedding model is required
+for retrieval. `DATABASE_URL` is required too, but it is checked lazily — at
+the first database call, not at startup — so a missing value surfaces as a
+runtime error rather than an import failure. `GOOGLE_API_KEY` takes precedence
+over Groq when both are set.
+
+### 3. Ingest the knowledge base
 
 ```bash
 uv run python -m app.ingest    # idempotent — safe to re-run
 ```
 
-### Seed the Database
+### 4. Seed the database
+
+Creates tables, applies lightweight column migrations, and inserts sample
+doctors, weekly schedules, a demo patient, and the initial admin user.
 
 ```bash
 uv run python -m app.seed      # idempotent — safe to re-run
 ```
 
-### Run the API
+### 5. Run the API
 
 ```bash
 uv run uvicorn app.api:app --reload
+# run from the repo root; module path is app.api because backend/ is on PYTHONPATH
 ```
 
-Ask a question:
+Interactive docs: <http://localhost:8000/docs>
+
+### CLI (RAG only)
+
+```bash
+uv run python main.py
+```
+
+---
+
+## API reference
+
+Auth is optional on `/ask`; every other endpoint enforces its own
+requirements. Pass the JWT as `Authorization: Bearer <token>`.
+
+### Core
+
+| Method | Path | Auth | Description |
+| --- | --- | --- | --- |
+| `POST` | `/ask` | optional | Agent entry point (guardrail → route → answer). |
+| `GET` | `/health` | none | Liveness probe; `200 ok` when the DB answers, `503 degraded` otherwise. |
+
+`POST /ask` request:
+
+```json
+{
+  "question": "What are the hospital visiting hours?",
+  "conversation_id": null
+}
+```
+
+`conversation_id` is optional. Supplying one continues that conversation and
+**requires a valid token + ownership**; an anonymous caller passing one gets
+`400`, and another user's id resolves to `404`.
+
+Response:
+
+```json
+{
+  "answer": "Visiting hours are 10 AM to 8 PM daily.",
+  "sources": [{ "source": "hospital_policy.pdf", "page": 1 }],
+  "conversation_id": 7
+}
+```
+
+`conversation_id` is `null` for anonymous callers — nothing is persisted
+without an identity to scope it to.
+
+### Auth — `/auth`
+
+| Method | Path | Auth | Description |
+| --- | --- | --- | --- |
+| `POST` | `/auth/register` | none | Self-register a **patient**. |
+| `POST` | `/auth/login` | none | Exchange credentials for a bearer token. |
+| `POST` | `/auth/users` | admin / hr | Create staff users with an assigned role. |
+| `GET` | `/auth/me` | token | The current user. |
+
+Role assignment is never client-controlled: `/auth/register` always creates a
+patient, and `/auth/users` enforces `CREATION_RULES` — admins create
+employee/doctor/hr, HR creates employees. Admins are created only by the seed
+script, never through the API.
+
+### Doctors
+
+| Method | Path | Auth | Description |
+| --- | --- | --- | --- |
+| `GET` | `/doctors` | none | Public doctor directory (name, specialization, fee). |
+| `GET` | `/doctors/me/schedule` | doctor | The signed-in doctor's own weekly schedule. |
+| `GET` | `/doctors/me/appointments` | doctor | Appointments booked with the signed-in doctor. |
+
+### Appointments
+
+| Method | Path | Auth | Description |
+| --- | --- | --- | --- |
+| `POST` | `/appointments` | patient | Book for the signed-in patient's own record. |
+| `GET` | `/appointments` | patient / admin | Own appointments (patient) or all (admin). |
+| `GET` | `/admin/appointments` | admin | Every appointment. |
+| `PATCH` | `/admin/appointments/{id}` | admin | Change date/time/status. |
+| `DELETE` | `/admin/appointments/{id}` | admin | Delete an appointment. |
+| `GET` | `/admin/doctors/{id}/schedule` | admin | Any doctor's weekly schedule. |
+| `PUT` | `/admin/doctors/{id}/schedule` | admin | Replace a doctor's whole week. |
+
+Booking and reschedule both validate the slot through the *same* `check_slot`
+logic the agent uses (weekly schedule membership + conflict check), so the
+REST API and `/ask` can never disagree about availability. An empty `slots`
+list on the schedule PUT clears the schedule and makes the doctor unbookable.
+
+### Example: ask
 
 ```bash
 curl -X POST http://localhost:8000/ask \
@@ -152,70 +294,164 @@ curl -X POST http://localhost:8000/ask \
   -d '{"question": "What are the hospital visiting hours?"}'
 ```
 
-Response:
-
-```json
-{
-  "answer": "Visiting hours are 10 AM to 8 PM daily.",
-  "sources": [
-    {"source": "knowledge_base/hospital_policy.pdf", "page": 1}
-  ]
-}
-```
-
-Example questions per route:
-
-- RAG: *"What are the hospital visiting hours?"*, *"What is the probation period?"*
-- Database: *"Which doctors are available?"*, *"What are the consultation fees?"*, *"What are the details of Dr. Sarah Ahmed?"*, *"Show my appointments"*
-- Booking: *"Book an appointment with Dr. Ayesha tomorrow at 10am"* → availability check → *"Please confirm..."* → *"yes"* → booked
-
-### CLI (Phase 1)
+### Example: authenticated booking
 
 ```bash
-uv run python main.py
+TOKEN=$(curl -s -X POST http://localhost:8000/auth/login \
+  -H 'Content-Type: application/json' \
+  -d '{"email":"patient@example.com","password":"secret123"}' | jq -r .access_token)
+
+curl -X POST http://localhost:8000/ask \
+  -H "Authorization: Bearer $TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"question":"Book an appointment with Dr. Ayesha tomorrow at 10am"}'
+# → "Please confirm: appointment with Dr. Ayesha Siddiqui ... Reply 'yes' to confirm."
+
+curl -X POST http://localhost:8000/ask \
+  -H "Authorization: Bearer $TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"question":"yes","conversation_id":<id from first response>}'
 ```
 
-## Key Behaviors
+---
 
-- **One RAG implementation.** All entry points (CLI, API, agent) reuse `app/core.py`.
-- **Idempotent ingestion.** Deterministic chunk IDs mean re-running ingestion upserts instead of duplicating; removed documents have their stale vectors pruned.
-- **Grounded citations.** The LLM cites only the context blocks it actually used — retrieved-but-unused chunks are not listed as sources.
-- **Unknown means unknown.** If the context doesn't contain the answer, the system says "I don't know based on the provided documents." — and cites no sources.
-- **Booking requires confirmation.** Availability is checked first; the appointment row is created only after an explicit user "yes".
-- **Untrusted content.** User input is screened by a guardrail; retrieved documents are sanitized before entering the prompt.
+## Access control
+
+**Document tiers** (`app/access.py`) gate which knowledge-base files a role can
+retrieve. The tier is stored in each chunk's metadata and enforced as a Qdrant
+payload filter at retrieval time — a restricted chunk is never retrieved, never
+enters the prompt, and can never be cited.
+
+| Document | Tier |
+| --- | --- |
+| `hospital_info.pdf`, `hospital_policy.pdf` | public |
+| `hr_policy.txt` | staff |
+
+| Role | Tiers readable |
+| --- | --- |
+| anonymous (no token) | public |
+| patient | public |
+| doctor / employee / hr / admin | public + staff |
+
+Unlisted files default to public, so adding a document cannot silently leak or
+restrict it — change `DOCUMENT_ACCESS` explicitly for anything sensitive.
+
+**Appointment data** is private: patients reach only their own linked `Patient`
+row and doctors only their own linked `Doctor` row (`Patient.user_id` /
+`Doctor.user_id`). An unlinked account falls back to nothing, never to the
+seeded demo patient. Booking/cancel/reschedule via `/ask` is limited to
+patients (their own) and admins; anonymous callers are denied outright.
+
+---
+
+## Key behaviors
+
+- **One RAG implementation.** CLI, API, and agent all reuse `core.ask()`.
+- **Idempotent ingestion.** Deterministic chunk IDs mean re-ingestion upserts
+  instead of duplicating; vectors from removed documents are pruned.
+- **Grounded citations.** The LLM cites only the context blocks it used.
+  Retrieved-but-unused chunks are not listed, and an ungrounded answer returns
+  `"I don't know based on the provided documents."` with **no** sources.
+- **Two-stage retrieval filter.** Chunks below `RETRIEVAL_THRESHOLD` are
+  dropped, and chunks scoring more than `SCORE_MARGIN` below the best match are
+  dropped too, so loosely related chunks are not cited as support.
+- **Follow-up rewriting.** When history is present, the question is rewritten
+  into a standalone search query before retrieval ("what about the fees for
+  that doctor?"). Fails open to the original question.
+- **Untrusted content.** User input is screened for prompt injection; retrieved
+  documents and replayed history are sanitized before entering any prompt.
+- **Booking needs confirmation.** Availability is checked first; the row is
+  created only after an explicit "yes", and re-checked at booking time.
+- **Every `/ask` is logged** with user, conversation, route, latency, and error.
+- **Hardened HTTP surface.** Per-IP sliding-window rate limit
+  (`RATE_LIMIT_PER_MINUTE`, `/health` exempt, `429` when tripped), a 1 MiB
+  request-body cap (`413`), an explicit CORS allow-list, GZip, and a bounded
+  LLM call budget (`LLM_TIMEOUT_SECONDS` / `LLM_MAX_RETRIES`). See
+  `PRODUCTION-HARDENING.MD`.
+
+---
 
 ## Testing
 
-The project is developed test-first with pytest. Tests live in `tests/` and exercise each module in isolation (Qdrant, Neon, and LLMs are mocked).
+Tests live in `tests/` and exercise each module in isolation (Qdrant, the
+database, and LLMs are mocked). 314 tests, verified with `--collect-only`.
 
 ```bash
 uv run pytest -q
 ```
 
-**Current status:** 78 tests — all passing.
+`pyproject.toml` sets `pythonpath = ["backend", "."]`, so tests import `app.*`
+directly. Golden-set evals live in `eval/` and back the `test_eval_*` modules:
 
 | File | Covers |
 | --- | --- |
-| `tests/test_loader.py` | PDF/TXT loading, pseudo-page metadata |
-| `tests/test_splitter.py` | Chunk size, overlap, metadata preservation |
-| `tests/test_retriever.py` | Threshold and margin filtering |
-| `tests/test_core.py` | `ask()`, context blocks, selective citations |
-| `tests/test_ingest.py` | Deterministic IDs, idempotency, stale pruning |
-| `tests/test_guardrails.py` | Injection screening and sanitization |
-| `tests/test_agent.py` | Routing, RAG/database/booking nodes |
-| `tests/test_api.py` | FastAPI `/ask` endpoint |
-| `tests/test_eval_*.py` | Golden-set evals (router, retrieval, guardrails) |
+| `test_core.py` / `test_ingest.py` / `test_rag_chain.py` / `test_groundedness.py` | RAG core, idempotency, compat shim, groundedness |
+| `test_loader.py` / `test_splitter.py` / `test_embedding.py` / `test_vectorstore.py` | Ingestion pipeline |
+| `test_guardrails.py` / `test_rewriter.py` / `test_prompt.py` / `test_llm.py` | Prompt boundaries |
+| `test_agent.py` / `test_booking_parsing.py` / `test_cancel_intent.py` / `test_db_tool.py` | Agent routing and tools |
+| `test_auth.py` / `test_rbac.py` / `test_access.py` | Auth and access tiers |
+| `test_api.py` / `test_appointments_api.py` / `test_conversations_api.py` / `test_hardening.py` | HTTP endpoints, rate limiting, body-size cap, 500 handler |
+| `test_eval_router.py` / `test_eval_retrieval.py` / `test_eval_rag_answers.py` / `test_eval_grounding.py` / `test_eval_guardrails.py` | Golden-set evals |
 
-## Tech Stack
+Tests marked `integration` require live Qdrant, PostgreSQL, or an LLM key:
 
-- **LangChain / LangGraph** — RAG pipeline and agent orchestration
-- **Qdrant** — vector database (local mode in `qdrant_data/`, or remote via `QDRANT_URL`)
-- **Neon PostgreSQL** — relational data (doctors, schedules, patients, appointments)
-- **Groq / Gemini** — hosted LLM inference
+```bash
+uv run pytest -q -m "not integration"
+```
+
+---
+
+## Deployment notes
+
+This repository is not containerized yet — there is no `Dockerfile` or
+`docker-compose.yml` at the root. To run it as a service you need:
+
+- Python 3.11+ with `uv` (or an equivalent image) and `app.*` importable
+  (set `PYTHONPATH=backend`)
+- A reachable PostgreSQL instance via `DATABASE_URL`
+- A reachable Qdrant — remote via `QDRANT_URL`, or a mounted `qdrant_data/`
+  volume for local mode
+
+Start command:
+
+```bash
+uvicorn app.api:app --host 0.0.0.0 --port 8000
+```
+
+Create the schema and seed data before the first request:
+
+```bash
+python -m app.seed     # tables + sample data
+python -m app.ingest   # knowledge base → Qdrant
+```
+
+Health checks should target `/health` (returns `503` when the database is
+unreachable) rather than `/`, which has no route.
+
+---
+
+## Tech stack
+
+- **FastAPI** — HTTP layer, validation, dependency-injected session/auth
+- **LangGraph / LangChain** — agent orchestration and RAG pipeline
+- **Qdrant** — vector store (local `qdrant_data/` or remote via `QDRANT_URL`)
+- **PostgreSQL** (Neon) — relational data, auth, conversations, pending bookings
+- **SQLModel** — schema + ORM
+- **Groq / Google Gemini** — LLM inference
 - **HuggingFace sentence-transformers** — embeddings
-- **FastAPI** — REST API
+- **PyJWT + bcrypt** — auth
 - **uv** — dependency management
 
-## Roadmap
+---
 
-Per `CLAUDE.md`, remaining Phase 2 stages: authentication (JWT/OAuth2), conversation memory in Neon, Next.js frontend, Docker, CI/CD, deployment.
+## Project documentation
+
+The design notes live alongside the code as separate documents:
+
+| Document | What it covers |
+| --- | --- |
+| [`plan.md`](plan.md) | The full status of the build — what exists per phase, the required setup steps, what is left (Docker, CI/CD, deployment), and every known rough edge. The authoritative source of truth for where the project stands. |
+| [`ISSUE.MD`](ISSUE.MD) | Institutional memory: the problems hit while building this (duplicate chunks, hallucinated answers, prompt injection, anonymous-access escalation, cross-user leaks, in-process booking state, date-parsing failures, config timing, routing) and how each was fixed. |
+| [`PRODUCTION-HARDENING.MD`](PRODUCTION-HARDENING.MD) | Reliability, observability and basic security: logging, `GET /health`, rate limiting, global exception handling, database connection resilience, LLM timeout/retry, and request-size protection. |
+| [`RAG-EVALUATION.MD`](RAG-EVALUATION.MD) | The quality dimensions used to evaluate retrieval and generation: correctness, faithfulness (groundedness), context relevance, answer relevance, and no-answer behaviour. |
+| [`CLAUDE.MD`](CLAUDE.MD) | Contributor guidance: commands, architecture, conventions and gotchas. |

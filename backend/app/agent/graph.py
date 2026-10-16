@@ -5,8 +5,9 @@ from sqlmodel import Session
 from app.access import tiers_for_role
 from app.agent.state import AgentState
 from app.agent.tools import booking_tool, db_tool, rag_tool
-from app.core import _extract_text, get_llm
+from app.core import UNKNOWN_ANSWER, _extract_text, get_llm, rewrite_query
 from app.db import get_engine
+from app.groundedness import is_grounded
 from app.guardrails import check_user_input
 from app.schema import Role, User
 
@@ -79,7 +80,23 @@ def router_node(state: AgentState) -> dict:
     if booking_tool.is_awaiting_confirmation(state.get("conversation_id")):
         return {"route": "booking"}
 
-    return {"route": route_question(state["question"])}
+    # Classify the rewritten query, not the raw turn: "what her fee" is
+    # unrecognisable as a database question until it reads "what is the
+    # consultation fee for Dr. Fatima Noor".
+    return {"route": route_question(state.get("search_query") or state["question"])}
+
+
+def rewrite_node(state: AgentState) -> dict:
+    """Resolve the turn into a standalone query before anything routes on it.
+
+    Runs ahead of the router because routing and retrieval must both see
+    the same resolved question — a follow-up that the router cannot
+    classify is exactly the one the retriever cannot search either.
+
+    No history means no LLM call: core.rewrite_query returns the question
+    unchanged, so first turns and the CLI keep their single-call cost.
+    """
+    return {"search_query": rewrite_query(state["question"], state.get("history"))}
 
 
 def rag_node(state: AgentState) -> dict:
@@ -92,6 +109,7 @@ def rag_node(state: AgentState) -> dict:
         state["question"],
         access=tiers_for_role(state.get("user_role")),
         history=state.get("history"),
+        search_query=state["search_query"],
     )
 
     return {
@@ -200,9 +218,9 @@ def database_node(state: AgentState) -> dict:
     # router sometimes sends cancel/reschedule here. This is checked
     # first so an unauthenticated request never reaches the booking
     # tools, which read a missing user as the seeded demo patient.
-    wants_appointment = any(
-        word in question
-        for word in booking_tool.CANCEL_WORDS + booking_tool.RESCHEDULE_WORDS
+    wants_appointment = booking_tool.matches_action_word(
+        question,
+        booking_tool.CANCEL_WORDS + booking_tool.RESCHEDULE_WORDS,
     ) or any(keyword in question for keyword in APPOINTMENT_LIST_KEYWORDS)
 
     if wants_appointment:
@@ -214,13 +232,23 @@ def database_node(state: AgentState) -> dict:
         if action is not None:
             return {"answer": action, "sources": []}
 
-        return {"answer": booking_tool.list_appointments(user), "sources": []}
+        return {
+            "answer": booking_tool.list_appointments(
+                user, upcoming_only="upcoming" in question
+            ),
+            "sources": [],
+        }
 
     if any(word in question for word in FEE_KEYWORDS):
-        return _fees_answer()
+        return _fees_answer(state)
 
-    # A specific doctor mentioned by name -> their details.
+    # A specific doctor mentioned by name -> their details. "what about her
+    # schedule" names nobody, so the referent comes from the conversation.
     details = db_tool.doctor_details(state["question"])
+    if details is None:
+        referenced = db_tool.referenced_doctor(state.get("history"))
+        if referenced is not None:
+            details = db_tool.format_doctor_details(referenced)
     if details is not None:
         return {"answer": details, "sources": []}
 
@@ -229,22 +257,53 @@ def database_node(state: AgentState) -> dict:
     if not doctors:
         return {"answer": "No doctors are currently registered.", "sources": []}
 
+    # The question named a specialty ("any general physician available?")
+    # -> only those doctors, not the whole directory.
+    by_specialty = db_tool.find_by_specialization(state["question"], doctors)
+    if by_specialty is not None:
+        doctors, specializations = by_specialty
+        header = ", ".join(specializations)
+    else:
+        header = "Registered"
+
     lines = [
         f"- {doctor['name']} ({doctor['specialization']})"
         for doctor in doctors
     ]
 
     return {
-        "answer": "Registered doctors:\n" + "\n".join(lines),
+        "answer": f"{header} doctors:\n" + "\n".join(lines),
         "sources": [],
     }
 
 
-def _fees_answer() -> dict:
-    fees = db_tool.get_consultation_fees()
+def _fees_answer(state: AgentState) -> dict:
+    """Fees for the doctor the question is about, else for everyone.
+
+    A fee question rarely names its subject — "what her fee" follows the
+    doctor the previous turn listed. The doctor named in the question wins,
+    then the one the conversation is already about; when neither resolves
+    (a bare "what are the consultation fees?", or a previous answer that
+    listed several doctors) the full list is the right answer.
+    """
+    doctor = db_tool.named_doctor(state["question"]) or db_tool.referenced_doctor(
+        state.get("history")
+    )
+
+    fees = (
+        db_tool.get_consultation_fees(doctor["id"])
+        if doctor is not None
+        else db_tool.get_consultation_fees()
+    )
 
     if not fees:
         return {"answer": "No doctors are currently registered.", "sources": []}
+
+    header = (
+        f"Consultation fee for {doctor['name']}:"
+        if doctor is not None
+        else "Consultation fees:"
+    )
 
     lines = []
     for fee in fees:
@@ -256,13 +315,14 @@ def _fees_answer() -> dict:
             )
 
     return {
-        "answer": "Consultation fees:\n" + "\n".join(lines),
+        "answer": header + "\n" + "\n".join(lines),
         "sources": [],
     }
 
 
 def validate_node(state: AgentState) -> dict:
-    """Final check: an empty answer is a failure, not a success."""
+    """Final checks: an empty answer is a failure, not a success, and a RAG
+    answer the retrieved context does not support is a failure too."""
     if state.get("error"):
         return {}
 
@@ -272,20 +332,31 @@ def validate_node(state: AgentState) -> dict:
             "error": "Empty answer",
         }
 
+    # Groundedness applies to the RAG route only: a database answer was
+    # read from Neon and a booking answer comes from the workflow, so
+    # neither is generated from context and neither can be unsupported by
+    # it. Sources are dropped with the answer — citing documents that do
+    # not support what was said is exactly the failure being caught.
+    if state.get("route") == "rag" and state.get("documents"):
+        if not is_grounded(state["answer"], state["documents"]):
+            return {"answer": UNKNOWN_ANSWER, "sources": []}
+
     return {}
 
 
 def _route_from(state: AgentState) -> str:
+    """Guardrail exit: a blocked turn skips rewriting and routing entirely."""
     if state.get("error"):
         return "validate"
 
-    return state["route"] if state["route"] in ROUTES else "rag"
+    return "rewrite"
 
 
 def build_graph():
     graph = StateGraph(AgentState)
 
     graph.add_node("guardrail", guardrail_node)
+    graph.add_node("rewrite", rewrite_node)
     graph.add_node("router", router_node)
     graph.add_node("rag", rag_node)
     graph.add_node("database", database_node)
@@ -296,8 +367,13 @@ def build_graph():
     graph.add_conditional_edges(
         "guardrail",
         _route_from,
-        {"validate": "validate", "rag": "router", "database": "router", "booking": "router"},
+        {"validate": "validate", "rewrite": "rewrite"},
     )
+    # Rewriting sits between the guardrail and the router: the router
+    # classifies the resolved query, and the route it picks receives that
+    # same query, so routing and retrieval never disagree about what the
+    # turn means.
+    graph.add_edge("rewrite", "router")
     graph.add_conditional_edges(
         "router",
         lambda state: state["route"],
@@ -335,6 +411,7 @@ def run_agent(
 
     initial: AgentState = {
         "question": question,
+        "search_query": question,
         "route": "",
         "answer": "",
         "sources": [],

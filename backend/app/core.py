@@ -11,6 +11,7 @@ def build_context(
     question: str,
     access: set[str] | None = None,
     history: list[dict] | None = None,
+    search_query: str | None = None,
 ) -> tuple[list, list[str]]:
     """
     Retrieve relevant documents and build numbered context blocks.
@@ -23,22 +24,42 @@ def build_context(
     app/access.py. Callers serving a request must pass one.
 
     `history` is prior turns as [{"role", "content"}] dicts. When present
-    the question is first rewritten into a standalone search query (see
-    rewrite_query), because a follow-up such as "what about the fees for
-    that doctor?" retrieves poorly as written.
+    and `search_query` is not given, the question is first rewritten into a
+    standalone search query (see rewrite_query), because a follow-up such as
+    "what about the fees for that doctor?" retrieves poorly as written.
+
+    `search_query` is an already-resolved query to search with instead —
+    the agent rewrites once, before routing, so passing the result here
+    keeps that second condense call from happening. `question` still
+    reaches the answer prompt: retrieval and generation deliberately use
+    different strings.
 
     Blocks are numbered so the LLM can cite the ones it actually used —
     a retrieved-but-unused chunk (e.g. an HR handbook for a hospital
     location question) must not appear as a source.
     """
-    documents = retrieve_documents(rewrite_query(question, history), access=access)
+    query = (
+        search_query if search_query is not None else rewrite_query(question, history)
+    )
+    documents = retrieve_documents(query, access=access)
 
-    blocks = [
+    return documents, format_blocks(documents)
+
+
+def format_blocks(documents: list) -> list[str]:
+    """
+    Numbered context blocks for the prompt, and for any check that must
+    judge the answer against exactly what the model was shown.
+
+    Retrieved chunks are untrusted content, so each one is neutralised here
+    rather than at each call site. Blocks are numbered so the LLM can cite
+    the ones it actually used — a retrieved-but-unused chunk (e.g. an HR
+    handbook for a hospital location question) must not appear as a source.
+    """
+    return [
         f"[{i}] {sanitize_context(document.page_content)}"
         for i, document in enumerate(documents, 1)
     ]
-
-    return documents, blocks
 
 
 # Cap on the rendered history block, independent of the per-message cap in
@@ -123,16 +144,27 @@ def rewrite_query(question: str, history: list[dict] | None) -> str:
 
 
 def format_sources(documents: list) -> list[dict]:
-    """De-duplicated source citations: file + page, preserving order."""
+    """
+    De-duplicated source citations: file + page, preserving order.
+
+    The citation is the bare filename, never the path it was loaded from.
+    `loader.py` stamps `str(file)`, so the same document appears as
+    `knowledge_base\\hospital_info.pdf` on Windows and
+    `knowledge_base/hospital_info.pdf` on Linux: leaking the host's path
+    layout and changing meaning between environments. Both separators are
+    handled so a collection ingested on one OS reads correctly on another.
+    """
     sources = []
     seen = set()
 
     for document in documents:
-        source = document.metadata.get("source")
+        raw = document.metadata.get("source")
         page = document.metadata.get("page")
 
-        if not source:
+        if not raw:
             continue
+
+        source = str(raw).replace("\\", "/").rsplit("/", 1)[-1]
 
         key = (source, page)
 
@@ -192,6 +224,7 @@ def ask(
     question: str,
     access: set[str] | None = None,
     history: list[dict] | None = None,
+    search_query: str | None = None,
 ) -> dict:
     """
     The single reusable RAG entry point.
@@ -207,11 +240,15 @@ def ask(
     It is optional: the CLI, the golden eval and rag_chain pass no history.
 
     Retrieval embeds a standalone rewrite of `question` when history is
-    present (see rewrite_query); the answer prompt still receives
+    present (see rewrite_query), unless `search_query` already carries one
+    — the agent computes it once, before routing, and forwards it so the
+    rewrite is not paid for twice. The answer prompt still receives
     `question` itself.
     """
     try:
-        documents, blocks = build_context(question, access=access, history=history)
+        documents, blocks = build_context(
+            question, access=access, history=history, search_query=search_query
+        )
 
         prompt = RAG_PROMPT.invoke(
             {

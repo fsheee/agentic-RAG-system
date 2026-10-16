@@ -33,7 +33,7 @@ def _record_rag(monkeypatch, answer="Visiting hours are 10am to 8pm."):
     """Stub the RAG tool, recording the access tiers it was called with."""
     calls = []
 
-    def fake(question, access=None, history=None):
+    def fake(question, access=None, history=None, search_query=None):
         calls.append(access)
         return {"answer": answer, "sources": [], "documents": []}
 
@@ -132,7 +132,7 @@ def test_appointment_listing_denied_for_employee(monkeypatch):
     _patch(monkeypatch, "database")
     called = []
     monkeypatch.setattr(
-        graph.booking_tool, "list_appointments", lambda u=None: called.append(u)
+        graph.booking_tool, "list_appointments", lambda u=None, **kwargs: called.append(u)
     )
 
     state = run_agent("Show my appointments", user=_user(Role.employee))
@@ -145,7 +145,7 @@ def test_appointment_listing_denied_for_anonymous(monkeypatch):
     _patch(monkeypatch, "database")
     called = []
     monkeypatch.setattr(
-        graph.booking_tool, "list_appointments", lambda u=None: called.append(u)
+        graph.booking_tool, "list_appointments", lambda u=None, **kwargs: called.append(u)
     )
 
     state = run_agent("Show my appointments")
@@ -193,3 +193,4 @@ def test_doctor_lookup_still_answers_anonymous_callers(monkeypatch):
     state = run_agent("Which doctors are available?")
 
     assert "Dr. A" in state["answer"]
+

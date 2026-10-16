@@ -158,3 +158,104 @@ def test_ask_rejects_empty_question(monkeypatch):
 
     assert client.post("/ask", json={"question": ""}).status_code == 422
     assert client.post("/ask", json={}).status_code == 422
+
+
+def test_health_reports_database_up():
+    """The probe answers 200 only when the database answers too."""
+    client = TestClient(api.app)
+
+    response = client.get("/health")
+
+    assert response.status_code == 200
+    assert response.json() == {"status": "ok", "database": "up"}
+
+
+def test_health_reports_database_down():
+    class BrokenSession:
+        def exec(self, *args, **kwargs):
+            raise RuntimeError("connection refused")
+
+    api.app.dependency_overrides[get_session] = lambda: BrokenSession()
+    client = TestClient(api.app)
+
+    response = client.get("/health")
+
+    assert response.status_code == 503
+    assert response.json() == {"status": "degraded", "database": "down"}
+
+
+def test_health_does_not_require_authentication():
+    """A public probe must not demand a token, or uptime checks break."""
+    api.app.dependency_overrides.pop(get_optional_user, None)
+
+    assert TestClient(api.app).get("/health").status_code == 200
+
+
+def test_ask_logs_route_and_timing(monkeypatch, caplog):
+    """Every /ask leaves one INFO summary line with the route it took."""
+    with caplog.at_level("INFO", logger="app.api"):
+        client = _client(
+            monkeypatch, _agent_state(route="database", answer="ok", sources=[])
+        )
+        response = client.post("/ask", json={"question": "Which doctors are available?"})
+
+    assert response.status_code == 200
+    assert any(
+        record.name == "app.api" and "route=database" in record.getMessage()
+        for record in caplog.records
+    )
+
+
+def test_rate_limiter_window_slides():
+    """Requests leave the window as it passes; the N+1st only fails while
+    the first N are still inside it."""
+    limiter = api.SlidingWindowRateLimiter(max_requests=3, window_seconds=60.0)
+
+    assert all(limiter.allow("ip", now=n) for n in (0.0, 1.0, 2.0))
+    assert not limiter.allow("ip", now=3.0)  # fourth inside the window
+    assert limiter.allow("ip", now=61.0)  # first request has expired out
+
+
+def test_rate_limiter_buckets_are_independent():
+    limiter = api.SlidingWindowRateLimiter(max_requests=1, window_seconds=60.0)
+
+    assert limiter.allow("ip-a", now=0.0)
+    assert not limiter.allow("ip-a", now=1.0)
+    assert limiter.allow("ip-b", now=1.0)
+
+
+def test_ask_is_rate_limited(monkeypatch):
+    """Past the window the caller gets 429, not a 200 with a broken answer."""
+    monkeypatch.setattr(api, "rate_limiter", api.SlidingWindowRateLimiter(max_requests=3))
+    client = _client(monkeypatch, _agent_state(answer="ok", sources=[]))
+    body = {"question": "hello"}
+
+    codes = [client.post("/ask", json=body).status_code for _ in range(4)]
+
+    assert codes == [200, 200, 200, 429]
+
+
+def test_health_is_exempt_from_rate_limiting(monkeypatch):
+    """A probe that gets throttled reads as an outage; it never counts."""
+    monkeypatch.setattr(api, "rate_limiter", api.SlidingWindowRateLimiter(max_requests=1))
+    client = TestClient(api.app)
+
+    assert client.get("/health").status_code == 200
+    assert client.get("/health").status_code == 200
+
+
+def test_unhandled_errors_return_500_with_request_id(monkeypatch):
+    """A crash inside /ask becomes a stable JSON 500 the client can quote."""
+    def explode(question, u=None, history=None, conversation_id=None):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(api, "run_agent", explode)
+    api.app.dependency_overrides[get_optional_user] = lambda: _user()
+    client = TestClient(api.app, raise_server_exceptions=False)
+
+    response = client.post("/ask", json={"question": "hello"})
+
+    assert response.status_code == 500
+    body = response.json()
+    assert body["detail"] == "Internal server error."
+    assert body["request_id"]

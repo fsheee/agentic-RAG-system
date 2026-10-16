@@ -407,7 +407,9 @@ def parse_node(state: BookingState) -> dict:
     if state["awaiting_confirmation"]:
         if any(word in lowered for word in CONFIRM_WORDS):
             return {"confirmation": "yes"}
-        if any(word in lowered for word in DENY_WORDS):
+        # The pending confirmation is itself the context, so a bare typo'd
+        # "cancle" reply still declines it.
+        if matches_action_word(lowered, DENY_WORDS, contextual=False):
             return {"confirmation": "no"}
         # Not a yes/no: treat as a new/updated request below.
 
@@ -758,10 +760,15 @@ def run_booking(
 # Appointment listing and cancel/reschedule
 # --------------------------------------------------------------------------
 
-def list_appointments(user: User | None = None) -> str:
-    """Answer text listing the requesting user's appointments."""
+def list_appointments(user: User | None = None, upcoming_only: bool = False) -> str:
+    """Answer text listing the requesting user's appointments.
+
+    `upcoming_only` keeps dates from today onward and drops cancelled
+    bookings — "show my upcoming appointments" must not answer with an
+    appointment that has already happened.
+    """
     with Session(get_engine()) as session:
-        lines = _appointment_lines(session, user)
+        lines = _appointment_lines(session, user, upcoming_only=upcoming_only)
 
     if lines is None:
         if user is not None:
@@ -774,21 +781,33 @@ def list_appointments(user: User | None = None) -> str:
     who = _patient_display_name(user) if user else DEFAULT_PATIENT_NAME
 
     if not lines:
+        if upcoming_only:
+            return f"{who} has no upcoming appointments."
         return f"{who} has no appointments."
 
     return f"{who}'s appointments:\n" + "\n".join(lines)
 
 
-def _appointment_lines(session: Session, user: User | None = None) -> list[str] | None:
+def _appointment_lines(
+    session: Session, user: User | None = None, upcoming_only: bool = False
+) -> list[str] | None:
     """Formatted appointment list for the requesting user (None if no patient)."""
     patient = _find_patient(session, user)
     if patient is None:
         return None
 
     appointments = get_patient_appointments(session, patient.id)
+    if upcoming_only:
+        appointments = [
+            appointment
+            for appointment in appointments
+            if appointment.appointment_date >= date.today()
+            and appointment.status != "cancelled"
+        ]
     if not appointments:
         return []
 
+    appointments.sort(key=lambda a: (a.appointment_date, a.start_time))
     doctors = {doctor.id: doctor.name for doctor in get_doctors(session)}
 
     return [
@@ -800,7 +819,89 @@ def _appointment_lines(session: Session, user: User | None = None) -> list[str] 
 
 CANCEL_WORDS = ("cancel",)
 RESCHEDULE_WORDS = ("reschedule", "postpone", "move")
-_APPOINTMENT_ID = re.compile(r"#?(\d+)\b")
+
+# A misspelled action word ("cancle") only counts when the sentence is
+# actually about appointments, so an unrelated word like "cancer" can never
+# be read as a cancel request.
+_ACTION_CONTEXT = (
+    "appointment",
+    "booking",
+    "slot",
+    "schedul",
+    "visit",
+    "clinic",
+    "consult",
+    "doctor",
+    "reschedul",
+)
+
+# "cancel appointment 3" / "appointment #3" / "cancel 3". A bare number is
+# deliberately not an id, so a date like "19th oct" or "3rd" can never be
+# mistaken for one (\b after the digits rejects ordinal suffixes).
+_APPOINTMENT_ID = re.compile(
+    r"#\s*(\d+)\b"
+    r"|\bappointment\s+(?:number|no\.?|#)?\s*(\d+)\b"
+    r"|\b(?:cancel|reschedule|postpone)\s+(?:appointment\s+)?#?\s*(\d+)\b",
+    re.IGNORECASE,
+)
+
+
+def _one_edit_apart(a: str, b: str) -> bool:
+    """True when a single insertion, deletion, replacement or adjacent
+    transposition turns `a` into `b` — one typo and nothing more."""
+    if abs(len(a) - len(b)) > 1:
+        return False
+
+    if len(a) == len(b):
+        diff = [i for i, (x, y) in enumerate(zip(a, b)) if x != y]
+        if len(diff) == 1:
+            return True
+        return (
+            len(diff) == 2
+            and diff[1] == diff[0] + 1
+            and a[diff[0]] == b[diff[1]]
+            and a[diff[1]] == b[diff[0]]
+        )
+
+    short, long_ = (a, b) if len(a) < len(b) else (b, a)
+    index = 0
+    while index < len(short) and short[index] == long_[index]:
+        index += 1
+    return short[index:] == long_[index + 1 :] or short[index + 1 :] == long_[index:]
+
+
+def matches_action_word(
+    text: str, words: tuple[str, ...], *, contextual: bool = True
+) -> bool:
+    """True when one of the intent `words` appears in `text`.
+
+    Exact substrings always match. Longer words also match a one-edit typo
+    of a whole word ("cancle" -> "cancel", "reshedule" -> "reschedule"),
+    because a misspelled cancel otherwise falls through to the booking
+    workflow and books an appointment instead of cancelling one.
+
+    A typo match additionally needs appointment-related words around it when
+    `contextual` is set, so "cancer" never triggers an action. Pass
+    False where the surrounding step already is that context — e.g. a bare
+    reply to a pending confirmation.
+    """
+    lowered = text.lower()
+    if any(word in lowered for word in words):
+        return True
+
+    tokens = re.findall(r"[a-z']+", lowered)
+
+    if contextual:
+        in_context = any(context in lowered for context in _ACTION_CONTEXT) or any(
+            token in ("dr", "drs") for token in tokens
+        )
+        if not in_context:
+            return False
+
+    return any(
+        len(word) >= 5 and any(_one_edit_apart(token, word) for token in tokens)
+        for word in words
+    )
 
 
 def handle_appointment_action(question: str, user: User | None = None) -> str | None:
@@ -808,8 +909,8 @@ def handle_appointment_action(question: str, user: User | None = None) -> str | 
     is not about canceling or rescheduling."""
     lowered = question.lower()
 
-    wants_cancel = any(word in lowered for word in CANCEL_WORDS)
-    wants_reschedule = any(word in lowered for word in RESCHEDULE_WORDS)
+    wants_cancel = matches_action_word(lowered, CANCEL_WORDS)
+    wants_reschedule = matches_action_word(lowered, RESCHEDULE_WORDS)
 
     if not (wants_cancel or wants_reschedule):
         return None
@@ -840,21 +941,56 @@ def handle_appointment_action(question: str, user: User | None = None) -> str | 
             )
 
         match = _APPOINTMENT_ID.search(question)
-        if match is None:
-            return (
-                "Which appointment? Please include its number, e.g. "
-                "'cancel appointment 3'.\n" + _listing()
-            )
+        appointment: Appointment | None = None
 
-        appointment_id = int(match.group(1))
-        appointment = session.get(Appointment, appointment_id)
+        if match is not None:
+            appointment_id = int(match.group(1) or match.group(2) or match.group(3))
+            appointment = session.get(Appointment, appointment_id)
 
-        if appointment is None or appointment.patient_id != patient.id:
-            return (
-                f"No appointment #{appointment_id} found for "
-                f"{DEFAULT_PATIENT_NAME}.\n" + _listing()
-            )
+            if appointment is None or appointment.patient_id != patient.id:
+                return (
+                    f"No appointment #{appointment_id} found for "
+                    f"{DEFAULT_PATIENT_NAME}.\n" + _listing()
+                )
+        else:
+            # No id given: narrow down by the doctor and the date the
+            # message does mention, so "cancle my appointment with dr.sara
+            # on 19th oct" works without asking for a number first.
+            candidates = appointments
 
+            wanted_doctor = _find_doctor(question, list(doctors.values()))
+            if wanted_doctor is not None:
+                candidates = [
+                    a for a in candidates if a.doctor_id == wanted_doctor.id
+                ]
+
+            if wants_cancel:
+                # For a cancel the date is the appointment's own date; for a
+                # reschedule it would be the new one, so it only narrows here.
+                wanted_day = _parse_date(question)
+                if wanted_day is not None:
+                    candidates = [
+                        a for a in candidates if a.appointment_date == wanted_day
+                    ]
+                matches = candidates
+                candidates = [a for a in candidates if a.status != "cancelled"]
+
+                if not candidates and len(matches) == 1:
+                    already = matches[0]
+                    return (
+                        f"Appointment #{already.id} on {already.appointment_date} "
+                        f"at {already.start_time} is already cancelled."
+                    )
+
+            if len(candidates) == 1:
+                appointment = candidates[0]
+            else:
+                return (
+                    "Which appointment? Please include its number, e.g. "
+                    "'cancel appointment 3'.\n" + _listing()
+                )
+
+        appointment_id = appointment.id
         doctor = doctors.get(appointment.doctor_id)
 
         if wants_cancel:

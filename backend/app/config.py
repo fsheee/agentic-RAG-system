@@ -30,6 +30,13 @@ RETRIEVAL_THRESHOLD = float(os.getenv("RETRIEVAL_THRESHOLD", "0.65"))
 # together) still keep all their sources.
 SCORE_MARGIN = float(os.getenv("SCORE_MARGIN", "0.10"))
 
+# LLM call budget: a single attempt may not run longer than the timeout, and
+# transient failures (429/5xx, dropped connection) are retried at most
+# LLM_MAX_RETRIES extra times. Worst case per call is roughly
+# LLM_TIMEOUT_SECONDS * (LLM_MAX_RETRIES + 1) plus retry backoff.
+LLM_TIMEOUT_SECONDS = float(os.getenv("LLM_TIMEOUT_SECONDS", "60"))
+LLM_MAX_RETRIES = int(os.getenv("LLM_MAX_RETRIES", "2"))
+
 
 def _model_is_cached(model_name: str) -> bool:
     cache_root = os.environ.get(

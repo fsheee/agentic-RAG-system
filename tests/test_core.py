@@ -173,6 +173,24 @@ def test_format_sources_deduplicates(monkeypatch):
     ]
 
 
+def test_format_sources_reports_bare_filename():
+    documents = [
+        Document(
+            page_content="a",
+            metadata={"source": "knowledge_base\\hospital_info.pdf", "page": 0},
+        ),
+        Document(
+            page_content="b",
+            metadata={"source": "knowledge_base/hr_policy.txt", "page": 2},
+        ),
+    ]
+
+    assert core.format_sources(documents) == [
+        {"source": "hospital_info.pdf", "page": 1},
+        {"source": "hr_policy.txt", "page": 3},
+    ]
+
+
 def test_format_sources_skips_documents_without_source():
     documents = [
         Document(page_content="no source", metadata={"page": 0}),
@@ -436,3 +454,42 @@ def test_build_context_rewrites_only_when_history_is_passed(monkeypatch):
 
     assert queries == ["first question"]
     assert llm.prompts == []
+
+
+def test_build_context_searches_a_precomputed_query(monkeypatch):
+    """The graph rewrites once, before routing, and forwards the result:
+    core must search it as-is instead of paying for a second condense."""
+    queries: list[str] = []
+
+    def rewrite_runs(question, history):
+        raise AssertionError("rewrite_query ran despite search_query being given")
+
+    monkeypatch.setattr(core, "retrieve_documents", _capture_query(queries))
+    monkeypatch.setattr(core, "rewrite_query", rewrite_runs)
+
+    core.build_context(
+        "what her fee",
+        history=HISTORY,
+        search_query="consultation fee for Dr. Fatima Noor",
+    )
+
+    assert queries == ["consultation fee for Dr. Fatima Noor"]
+
+
+def test_ask_forwards_search_query_and_keeps_the_original_question(monkeypatch):
+    """Retrieval searches the rewrite; the prompt still shows the turn as
+    the user actually asked it."""
+    queries: list[str] = []
+    llm = FakeLLM("answer")
+
+    monkeypatch.setattr(core, "retrieve_documents", _capture_query(queries))
+    monkeypatch.setattr(core, "get_llm", lambda: llm)
+
+    core.ask(
+        "what her fee",
+        history=HISTORY,
+        search_query="consultation fee for Dr. Fatima Noor",
+    )
+
+    assert queries == ["consultation fee for Dr. Fatima Noor"]
+    assert "what her fee" in llm.prompts[0].to_string()

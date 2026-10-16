@@ -25,6 +25,7 @@ dependencies = [
     "qdrant-client>=1.19.0",
     "sentence-transformers>=5.7.0",
     "sqlmodel>=0.0.42",
+    "torch>=2.13.0",
     "uvicorn>=0.52.4",
 ]
 
@@ -33,6 +34,22 @@ dev = [
     "httpx>=0.28.1",
     "pytest>=8.0",
 ]
+
+# torch (the CPU half of the embedding stack, pulled in by
+# sentence-transformers) is declared directly so the index below can be
+# applied to it — uv only honours [tool.uv.sources] for direct dependencies.
+# The default PyPI wheels for linux also pull in the CUDA runtime
+# (nvidia-* / cuda-toolkit): several GB of libraries a CPU container never
+# loads, which roughly triples the image size and the CI build time. The CPU
+# index ships the same torch without those dependencies. `explicit` keeps
+# every other package on PyPI.
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[tool.uv.sources]
+torch = { index = "pytorch-cpu" }
 
 [tool.pytest.ini_options]
 pythonpath = ["backend", "."]
