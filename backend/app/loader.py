@@ -1,13 +1,13 @@
-
 from pathlib import Path
+
 
 from langchain_community.document_loaders import PyPDFLoader
 from langchain_core.documents import Document
 
 from app.access import access_for_source
 
-
-DATA_PATH = "knowledge_base"
+DATA_PATH = Path(__file__).resolve().parents[2] / "knowledge_base"
+#DATA_PATH = "knowledge_base"
 
 # TXT files have no pages, so we track location by line groups of this
 # size and expose them as pseudo-pages in metadata (citations then show

@@ -9,7 +9,7 @@ An **Agentic RAG** healthcare assistant in two phases, one repo:
 - **Phase 1 — RAG:** retrieval-augmented answering over `knowledge_base/` (Qdrant + LLM) with source citations.
 - **Phase 2 — Agentic:** a LangGraph agent that routes each turn between RAG, relational data (Neon PostgreSQL), and an appointment-booking workflow, exposed as a FastAPI API.
 
-The Python package lives in `backend/app/` (moved there in `1daa609`). The Next.js frontend was **removed from this repo**; the API keeps a CORS allow-list for a separately deployed UI.
+The Python package lives in `backend/app/`. The Next.js frontend was **removed from this repo**; the API keeps a CORS allow-list for a separately deployed UI.
 
 `plan.md` is the authoritative status of the build; `ISSUE.MD` records the problems solved and the open rough edges. Read both before making non-trivial changes. `README.md` has drifted (still mentions `frontend/`, `app/` paths, "78 tests") — do not treat it as source of truth.
 

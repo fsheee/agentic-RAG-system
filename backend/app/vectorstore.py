@@ -5,7 +5,7 @@ from langchain_qdrant import QdrantVectorStore
 from qdrant_client import QdrantClient
 from qdrant_client.http import models
 
-from .config import QDRANT_COLLECTION_PREFIX, QDRANT_URL
+from .config import QDRANT_COLLECTION_PREFIX, QDRANT_URL,QDRANT_API_KEY
 from .embedding import get_embeddings
 
 
@@ -30,11 +30,19 @@ QDRANT_PATH = Path(os.getenv("QDRANT_PATH") or _DEFAULT_QDRANT_PATH)
 def create_vector_store():
     embeddings = get_embeddings()
 
+    # if QDRANT_URL:
+    #     client = QdrantClient(url=QDRANT_URL)
+    # else:
+    #     client = QdrantClient(path=str(QDRANT_PATH))
+    
     if QDRANT_URL:
-        client = QdrantClient(url=QDRANT_URL)
+        client = QdrantClient(
+        url=QDRANT_URL,
+        api_key=QDRANT_API_KEY,
+    )
     else:
         client = QdrantClient(path=str(QDRANT_PATH))
-
+    
     if not client.collection_exists(COLLECTION_NAME):
         vector_size = len(embeddings.embed_query("test"))
 

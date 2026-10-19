@@ -2,7 +2,7 @@ from langchain_core.prompts import ChatPromptTemplate
 from langgraph.graph import END, START, StateGraph
 from sqlmodel import Session
 
-from app.access import tiers_for_role
+from app.access import STAFF, tiers_for_role
 from app.agent.state import AgentState
 from app.agent.tools import booking_tool, db_tool, rag_tool
 from app.core import UNKNOWN_ANSWER, _extract_text, get_llm, rewrite_query
@@ -40,6 +40,25 @@ Question:
 
 ROUTES = ("rag", "database", "booking")
 
+HR_POLICY_KEYWORDS = (
+    "hr policy",
+    "human resources",
+    "employee policy",
+    "annual leave",
+    "sick leave",
+    "leave policy",
+    "leave days",
+    "carryover",
+    "work from home",
+    "remote work",
+    "probation period",
+    "core hours",
+)
+
+
+def is_hr_policy_question(question: str) -> bool:
+    question = question.lower()
+    return any(keyword in question for keyword in HR_POLICY_KEYWORDS)
 
 def route_question(question: str) -> str:
     """LLM-based routing. Falls back to 'rag' on unexpected output; the RAG
@@ -77,14 +96,32 @@ def router_node(state: AgentState) -> dict:
     # state is keyed by conversation, so this only fires for the
     # conversation that actually has one; without a conversation id it is
     # always False rather than falling back to a shared slot.
+   
+    question = state.get("search_query") or state["question"]
+
+    # HR documents are restricted to authorized roles.
+    allowed_tiers = tiers_for_role(state.get("user_role"))
+    if is_hr_policy_question(question) and STAFF not in allowed_tiers:
+        return {
+            "route": "blocked",
+            "answer": (
+                "Access denied. HR policy information is available only "
+                "to authorized employees, doctors, HR staff, and administrators."
+            ),
+            "sources": [],
+            "documents": [],
+        }
+    # Preserve pending booking confirmations.
     if booking_tool.is_awaiting_confirmation(state.get("conversation_id")):
         return {"route": "booking"}
 
     # Classify the rewritten query, not the raw turn: "what her fee" is
     # unrecognisable as a database question until it reads "what is the
     # consultation fee for Dr. Fatima Noor".
-    return {"route": route_question(state.get("search_query") or state["question"])}
-
+    #return {"route": route_question(state.get("search_query") or state["question"])}
+    
+    #Route using the rewritten question for follow-up suppor
+    return {"route": route_question(question)}
 
 def rewrite_node(state: AgentState) -> dict:
     """Resolve the turn into a standalone query before anything routes on it.
@@ -286,10 +323,12 @@ def _fees_answer(state: AgentState) -> dict:
     (a bare "what are the consultation fees?", or a previous answer that
     listed several doctors) the full list is the right answer.
     """
-    doctor = db_tool.named_doctor(state["question"]) or db_tool.referenced_doctor(
+    resolved_question = state.get("search_query") or state["question"]
+    doctor = db_tool.named_doctor(resolved_question) or db_tool.referenced_doctor(
         state.get("history")
-    )
 
+    )
+    
     fees = (
         db_tool.get_consultation_fees(doctor["id"])
         if doctor is not None
@@ -377,8 +416,13 @@ def build_graph():
     graph.add_conditional_edges(
         "router",
         lambda state: state["route"],
-        {"rag": "rag", "database": "database", "booking": "booking"},
+        #{"rag": "rag", "database": "database", "booking": "booking"},
+    
+        {"rag": "rag","database": "database","booking": "booking",
+            "blocked": "validate", },
+    
     )
+
     graph.add_edge("rag", "validate")
     graph.add_edge("database", "validate")
     graph.add_edge("booking", "validate")
@@ -424,4 +468,3 @@ def run_agent(
     }
 
     return graph.invoke(initial)
-
