@@ -4,8 +4,8 @@ name: Deploy
 #
 # Required repository secrets:
 #   VERCEL_TOKEN      — Vercel personal/team token
-#   VERCEL_ORG_ID     — from `vercel link` → .vercel/project.json
-#   VERCEL_PROJECT_ID — from `vercel link` → .vercel/project.json
+#   VERCEL_ORG_ID     — team/user id from `vercel link` → .vercel/project.json
+#   VERCEL_PROJECT_ID — optional override; the project id is inlined below
 #
 # Required Vercel project settings (Production environment) — these are
 # runtime values, not build values, so they must live in the Vercel dashboard:
@@ -65,7 +65,9 @@ jobs:
       url: ${{ steps.deploy.outputs.url }}
     env:
       VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
-      VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+      # Not a credential, so it lives here rather than in a repo secret.
+      # A `VERCEL_PROJECT_ID` secret, if set, still wins.
+      VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID || 'prj_HeW5gC8aHZqXLAspcXg8sJD4fDQZ' }}
       # Helps `vercel build` resolve the `app.*` imports while analysing the
       # entrypoint. This does not reach the running function — the same value
       # must also be set in the Vercel project's Production environment.
@@ -93,3 +95,4 @@ jobs:
           url=$(vercel deploy --prebuilt --prod --token=${{ secrets.VERCEL_TOKEN }})
           echo "url=$url" >> "$GITHUB_OUTPUT"
           echo "Deployed to $url" >> "$GITHUB_STEP_SUMMARY"
+
