@@ -1,0 +1,95 @@
+name: Deploy
+
+# Test on every PR and push; deploy to Vercel only from main after tests pass.
+#
+# Required repository secrets:
+#   VERCEL_TOKEN      — Vercel personal/team token
+#   VERCEL_ORG_ID     — from `vercel link` → .vercel/project.json
+#   VERCEL_PROJECT_ID — from `vercel link` → .vercel/project.json
+#
+# Required Vercel project settings (Production environment) — these are
+# runtime values, not build values, so they must live in the Vercel dashboard:
+#   PYTHONPATH=backend          (backend/app/auth.py imports `app.*`)
+#   DATABASE_URL, JWT_SECRET, GROQ_API_KEY or GOOGLE_API_KEY,
+#   EMBEDDING_MODEL, QDRANT_URL, QDRANT_API_KEY, ALLOWED_ORIGINS
+# Schema and vectors are NOT created by this workflow: run
+# `python -m app.seed` and `python -m app.ingest` against production once
+# (and `ingest` again after any access-tier change).
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+env:
+  # auth.py raises at import time when JWT_SECRET is missing. Every test mocks
+  # the external services, so a throwaway value is sufficient for the suite.
+  JWT_SECRET: ci-only-not-a-real-secret-do-not-use-in-production
+
+jobs:
+  test:
+    name: Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          python-version-file: .python-version
+          enable-cache: true
+
+      - name: Install dependencies
+        run: uv sync --frozen
+
+      - name: Run tests
+        run: uv run python -m pytest -q -m "not integration"
+
+  deploy:
+    name: Deploy to Vercel
+    needs: test
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment:
+      name: production
+      url: ${{ steps.deploy.outputs.url }}
+    env:
+      VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+      VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+      # Helps `vercel build` resolve the `app.*` imports while analysing the
+      # entrypoint. This does not reach the running function — the same value
+      # must also be set in the Vercel project's Production environment.
+      PYTHONPATH: backend
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install Vercel CLI
+        run: npm install --global vercel@latest
+
+      - name: Pull Vercel project settings
+        run: vercel pull --yes --environment=production --token=${{ secrets.VERCEL_TOKEN }}
+
+      - name: Build
+        run: vercel build --prod --token=${{ secrets.VERCEL_TOKEN }}
+
+      - name: Deploy prebuilt output
+        id: deploy
+        run: |
+          url=$(vercel deploy --prebuilt --prod --token=${{ secrets.VERCEL_TOKEN }})
+          echo "url=$url" >> "$GITHUB_OUTPUT"
+          echo "Deployed to $url" >> "$GITHUB_STEP_SUMMARY"

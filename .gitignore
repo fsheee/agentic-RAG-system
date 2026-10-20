@@ -10,4 +10,7 @@ wheels/
 .venv
 .env
 
+# Vercel CLI link/build output (written by `vercel pull` / `vercel build`)
+.vercel/
+
 qdrant_data/
