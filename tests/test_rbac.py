@@ -10,6 +10,8 @@ Two separate policies are covered here:
   an anonymous caller is refused outright.
 """
 
+import pytest
+
 from app.agent import graph, run_agent
 from app.schema import Role, User
 
@@ -55,6 +57,23 @@ def _record_action(monkeypatch):
     return calls
 
 
+def _record_booking_calls(monkeypatch):
+    """Record both the action and booking tools without reaching real data."""
+    calls = []
+
+    def record_action(question, user=None):
+        calls.append(("action", question))
+        return None
+
+    def record_booking(question, user=None, conversation_id=None, history=None):
+        calls.append(("booking", question))
+        return "booking tool called"
+
+    monkeypatch.setattr(graph.booking_tool, "handle_appointment_action", record_action)
+    monkeypatch.setattr(graph.booking_tool, "run_booking", record_booking)
+    return calls
+
+
 # --- RAG access tiers -------------------------------------------------
 
 
@@ -97,6 +116,16 @@ def test_hr_role_reads_the_staff_tier(monkeypatch):
     assert calls == [{"public", "staff"}]
 
 
+@pytest.mark.parametrize("role", [Role.doctor, Role.admin])
+def test_doctor_and_admin_rag_calls_are_scoped_to_both_tiers(monkeypatch, role):
+    _patch(monkeypatch, "rag")
+    calls = _record_rag(monkeypatch)
+
+    run_agent("What is the probation period?", user=_user(role))
+
+    assert calls == [{"public", "staff"}]
+
+
 def test_rag_route_no_longer_refuses_any_role(monkeypatch):
     """The old blanket staff-only refusal is gone: every role gets an answer."""
     _patch(monkeypatch, "rag")
@@ -112,30 +141,29 @@ def test_rag_route_no_longer_refuses_any_role(monkeypatch):
 # --- Appointment data -------------------------------------------------
 
 
-def test_booking_route_denied_for_employee(monkeypatch):
+@pytest.mark.parametrize("role", [Role.employee, Role.doctor, Role.hr])
+def test_booking_route_denied_for_non_patient_roles(monkeypatch, role):
     _patch(monkeypatch, "booking")
-    called = []
-    monkeypatch.setattr(
-        graph.booking_tool, "run_booking", lambda q, u=None, conversation_id=None, history=None: called.append(q)
-    )
+    calls = _record_booking_calls(monkeypatch)
 
     state = run_agent(
         "Book an appointment with Dr. Sarah tomorrow at 10am",
-        user=_user(Role.employee),
+        user=_user(role),
     )
 
     assert "patients" in state["answer"]
-    assert called == []  # the tool is never reached
+    assert calls == []  # neither action nor booking tool may run
 
 
-def test_appointment_listing_denied_for_employee(monkeypatch):
+@pytest.mark.parametrize("role", [Role.employee, Role.doctor, Role.hr])
+def test_appointment_listing_denied_for_non_patient_roles(monkeypatch, role):
     _patch(monkeypatch, "database")
     called = []
     monkeypatch.setattr(
         graph.booking_tool, "list_appointments", lambda u=None, **kwargs: called.append(u)
     )
 
-    state = run_agent("Show my appointments", user=_user(Role.employee))
+    state = run_agent("Show my appointments", user=_user(role))
 
     assert "patients" in state["answer"]
     assert called == []
@@ -156,15 +184,12 @@ def test_appointment_listing_denied_for_anonymous(monkeypatch):
 
 def test_booking_route_denied_for_anonymous(monkeypatch):
     _patch(monkeypatch, "booking")
-    called = []
-    monkeypatch.setattr(
-        graph.booking_tool, "run_booking", lambda q, u=None, conversation_id=None, history=None: called.append(q)
-    )
+    calls = _record_booking_calls(monkeypatch)
 
     state = run_agent("Book an appointment with Dr. Sarah tomorrow at 10am")
 
     assert "sign in" in state["answer"].lower()
-    assert called == []
+    assert calls == []
 
 
 def test_anonymous_cancel_never_reaches_the_booking_tool(monkeypatch):
@@ -193,4 +218,3 @@ def test_doctor_lookup_still_answers_anonymous_callers(monkeypatch):
     state = run_agent("Which doctors are available?")
 
     assert "Dr. A" in state["answer"]
-

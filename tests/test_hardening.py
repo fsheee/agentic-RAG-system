@@ -137,15 +137,16 @@ def test_transient_provider_errors_are_retried_a_bounded_number_of_times():
         return httpx.Response(500, json={"error": {"message": "boom"}})
 
     transport = httpx.MockTransport(handler)
-    completions = groq.Groq(
-        api_key="test-key",
-        max_retries=2,
-        http_client=httpx.Client(transport=transport),
-    ).chat.completions
-    chat = ChatGroq(model="llama-3.1-8b-instant", client=completions)
+    with httpx.Client(transport=transport) as http_client:
+        completions = groq.Groq(
+            api_key="test-key",
+            max_retries=2,
+            http_client=http_client,
+        ).chat.completions
+        chat = ChatGroq(model="llama-3.1-8b-instant", client=completions)
 
-    with pytest.raises(groq.APIStatusError):
-        chat.invoke([HumanMessage(content="hi")])
+        with pytest.raises(groq.APIStatusError):
+            chat.invoke([HumanMessage(content="hi")])
 
     assert len(attempts) == 3, f"expected 1 attempt + 2 retries, got {len(attempts)}"
 
@@ -164,14 +165,21 @@ def client():
         poolclass=StaticPool,
     )
     SQLModel.metadata.create_all(engine)
+    previous_overrides = api.app.dependency_overrides.copy()
 
     def test_session():
         with Session(engine) as session:
             yield session
 
     api.app.dependency_overrides[get_session] = test_session
-    yield TestClient(api.app)
-    api.app.dependency_overrides.clear()
+    test_client = TestClient(api.app)
+    try:
+        yield test_client
+    finally:
+        test_client.close()
+        api.app.dependency_overrides.clear()
+        api.app.dependency_overrides.update(previous_overrides)
+        engine.dispose()
 
 
 def test_declared_oversized_body_is_refused_without_reading_it(client):
@@ -179,6 +187,27 @@ def test_declared_oversized_body_is_refused_without_reading_it(client):
 
     assert response.status_code == 413
     assert response.json() == {"detail": "Request body too large."}
+
+
+def test_declared_oversized_body_does_not_read_from_receive():
+    async def app(scope, receive, send):
+        raise AssertionError("oversized declared body should be rejected first")
+
+    async def receive():
+        raise AssertionError("oversized declared body should not be read")
+
+    async def send(message):
+        pass
+
+    scope = {
+        "type": "http",
+        "headers": [
+            (b"content-length", str(MAX_REQUEST_BODY_BYTES + 1).encode())
+        ],
+    }
+    middleware = BodySizeLimitMiddleware(app, max_bytes=MAX_REQUEST_BODY_BYTES)
+
+    asyncio.run(middleware(scope, receive, send))
 
 
 def test_streamed_body_over_the_limit_is_refused(client):

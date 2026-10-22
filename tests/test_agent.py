@@ -275,10 +275,8 @@ def test_list_appointments_upcoming_drops_past_and_cancelled(sqlite_engine):
     booking is not something the patient is still going to."""
     from datetime import date, time, timedelta
 
-    from sqlmodel import Session
-
     from app.agent.tools import booking_tool
-    from app.schema import Appointment, Doctor, Patient
+    from app.schema import Appointment, Patient
 
     with Session(sqlite_engine) as session:
         doctor = Doctor(name="Dr. Sarah Ahmed", specialization="Cardiology")
