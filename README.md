@@ -128,7 +128,34 @@ agent-rag/
 - Python 3.11+
 - [uv](https://docs.astral.sh/uv/) (recommended) or pip
 - A PostgreSQL database (a managed Neon instance works out of the box)
+- A Qdrant instance — local mode (default, `qdrant_data/`) or a managed **Qdrant Cloud** cluster
 - An LLM API key (Groq or Google Gemini)
+
+### Qdrant: local vs. cloud
+
+The vector store is selected by `QDRANT_URL`:
+
+| Mode | Config | Data lives in | Good for |
+| --- | --- | --- | --- |
+| **Local** (default) | leave `QDRANT_URL` empty | `<repo>/qdrant_data/` (cwd-independent, overridable with `QDRANT_PATH`) | development, CLI, tests |
+| **Cloud / server** | `QDRANT_URL` (+ `QDRANT_API_KEY` if the cluster requires one) | the Qdrant server | production, shared deployments |
+
+Setting `QDRANT_URL` is all that changes — `vectorstore.py` builds the client
+with the URL and key when set, and falls back to local mode otherwise. The
+same collection name (optionally prefixed via `QDRANT_COLLECTION_PREFIX`) is
+created on first use.
+
+For deployment, use Qdrant Cloud (or a self-hosted Qdrant server): a container
+image that ingests into a local `qdrant_data/` folder loses its vectors on
+every restart. Point `QDRANT_URL` at the cloud cluster, run `python -m app.ingest`
+once against it, and every instance then reads the same collection.
+
+Gotcha carried from development: in local mode the store used to split across
+working directories (ingest ran from the repo root, the API from `backend/`,
+each silently opening its own empty `qdrant_data`). `QDRANT_PATH` is now
+anchored to the repo root so this cannot recur — but on Qdrant Cloud the
+problem does not exist at all, which is another reason to prefer it in
+production.
 
 ---
 
@@ -409,8 +436,7 @@ This repository is not containerized yet — there is no `Dockerfile` or
 - Python 3.11+ with `uv` (or an equivalent image) and `app.*` importable
   (set `PYTHONPATH=backend`)
 - A reachable PostgreSQL instance via `DATABASE_URL`
-- A reachable Qdrant — remote via `QDRANT_URL`, or a mounted `qdrant_data/`
-  volume for local mode
+- A reachable Qdrant — **recommended: Qdrant Cloud via `QDRANT_URL` (+ `QDRANT_API_KEY`)**; local mode needs a persistent mounted `qdrant_data/` volume and loses vectors otherwise
 
 Start command:
 

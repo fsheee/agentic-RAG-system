@@ -58,3 +58,7 @@ testpaths = ["tests"]
 markers = [
     "integration: requires live Qdrant, Neon, or an LLM API key",
 ]
+
+
+[tool.vercel]
+entrypoint = "backend.app.api:app"

@@ -158,7 +158,9 @@ lessons, not hypotheticals.
 - **Neon dropping idle connections** — a stale pooled connection failed the
   next query with "SSL connection closed". The engine now uses
   `pool_pre_ping=True`, `pool_recycle` (1800s) and bounded
-  `POOL_SIZE`/`POOL_MAX_OVERFLOW`/`POOL_TIMEOUT_SECONDS`.
+  `POOL_SIZE`/`POOL_MAX_
+  
+  OVERFLOW`/`POOL_TIMEOUT_SECONDS`.
 
 ## 6. Routing issues
 
