@@ -29,6 +29,10 @@ def _user(role, user_id=1):
 
 def _patch(monkeypatch, route):
     monkeypatch.setattr(graph, "route_question", lambda question: route)
+    # Unit tests that focus on authorization should not open a real database
+    # connection while checking the generic doctor-list path.
+    monkeypatch.setattr(graph.db_tool, "doctor_details", lambda question: None)
+    monkeypatch.setattr(graph.db_tool, "named_doctor", lambda question: None)
 
 
 def _record_rag(monkeypatch, answer="Visiting hours are 10am to 8pm."):

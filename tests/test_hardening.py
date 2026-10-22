@@ -143,7 +143,11 @@ def test_transient_provider_errors_are_retried_a_bounded_number_of_times():
             max_retries=2,
             http_client=http_client,
         ).chat.completions
-        chat = ChatGroq(model="llama-3.1-8b-instant", client=completions)
+        chat = ChatGroq(
+            model="llama-3.1-8b-instant",
+            groq_api_key="test-key",
+            client=completions,
+        )
 
         with pytest.raises(groq.APIStatusError):
             chat.invoke([HumanMessage(content="hi")])

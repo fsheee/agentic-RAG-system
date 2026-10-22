@@ -60,6 +60,10 @@ def _patch(monkeypatch, route, rag_result=_fake_rag_result(), doctors=None):
         lambda question, access=None, history=None, search_query=None: rag_result,
     )
     monkeypatch.setattr(graph.db_tool, "list_doctors", lambda: doctors or [])
+    # A generic doctor listing must not consult the real database just to
+    # discover that no individual doctor was named.
+    monkeypatch.setattr(graph.db_tool, "doctor_details", lambda question: None)
+    monkeypatch.setattr(graph.db_tool, "named_doctor", lambda question: None)
 
 
 def test_rag_route_returns_core_answer_and_sources(monkeypatch):
@@ -110,6 +114,13 @@ def test_database_route_narrows_to_named_specialty(monkeypatch):
 
 def test_database_route_answers_fee_questions(monkeypatch):
     _patch(monkeypatch, "database")
+    named_queries = []
+
+    def no_named_doctor(question):
+        named_queries.append(question)
+        return None
+
+    monkeypatch.setattr(graph.db_tool, "named_doctor", no_named_doctor)
     monkeypatch.setattr(
         graph.db_tool,
         "get_consultation_fees",
@@ -126,6 +137,7 @@ def test_database_route_answers_fee_questions(monkeypatch):
     assert "Dr. A (Cardiology): PKR 3000" in state["answer"]
     assert "Dr. B (Neurology): fee not set" in state["answer"]
     assert state["sources"] == []
+    assert named_queries == ["What is the consultation fee?"]
 
 
 def test_fee_question_resolves_doctor_from_history(monkeypatch, sqlite_engine):
@@ -326,16 +338,23 @@ def test_list_appointments_upcoming_drops_past_and_cancelled(sqlite_engine):
 
 def test_database_route_shows_doctor_details(monkeypatch):
     _patch(monkeypatch, "database")
+    looked_up = []
+
+    def doctor_details(question):
+        looked_up.append(question)
+        return "Dr. A (Cardiology)\nConsultation fee: PKR 3000"
+
     monkeypatch.setattr(
         graph.db_tool,
         "doctor_details",
-        lambda question: "Dr. A (Cardiology)\nConsultation fee: PKR 3000",
+        doctor_details,
     )
 
     state = run_agent("What are the details of Dr. A?")
 
     assert state["route"] == "database"
     assert "PKR 3000" in state["answer"]
+    assert looked_up == ["What are the details of Dr. A?"]
 
 
 def test_booking_route_handles_cancel(monkeypatch, sqlite_engine):
