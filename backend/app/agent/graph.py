@@ -1,3 +1,5 @@
+import re
+
 from langchain_core.prompts import ChatPromptTemplate
 from langgraph.graph import END, START, StateGraph
 from sqlmodel import Session
@@ -58,7 +60,40 @@ HR_POLICY_KEYWORDS = (
 
 def is_hr_policy_question(question: str) -> bool:
     question = question.lower()
-    return any(keyword in question for keyword in HR_POLICY_KEYWORDS)
+    if any(keyword in question for keyword in HR_POLICY_KEYWORDS):
+        return True
+
+    # "leave poilcy" should still reach the access check rather than falling
+    # through to public RAG and appearing as an ordinary missing answer.
+    tokens = re.findall(r"[a-z']+", question)
+    return "leave" in tokens and any(
+        _one_edit_apart(token, "policy") for token in tokens
+    )
+
+
+def _one_edit_apart(a: str, b: str) -> bool:
+    """True when one insertion, deletion, replacement, or adjacent
+    transposition turns `a` into `b`."""
+    if abs(len(a) - len(b)) > 1:
+        return False
+
+    if len(a) == len(b):
+        diff = [i for i, (left, right) in enumerate(zip(a, b)) if left != right]
+        if len(diff) == 1:
+            return True
+        return (
+            len(diff) == 2
+            and diff[1] == diff[0] + 1
+            and a[diff[0]] == b[diff[1]]
+            and a[diff[1]] == b[diff[0]]
+        )
+
+    short, long_ = (a, b) if len(a) < len(b) else (b, a)
+    index = 0
+    while index < len(short) and short[index] == long_[index]:
+        index += 1
+    return short[index:] == long_[index + 1 :] or short[index + 1 :] == long_[index:]
+
 
 def route_question(question: str) -> str:
     """LLM-based routing. Falls back to 'rag' on unexpected output; the RAG
@@ -105,8 +140,9 @@ def router_node(state: AgentState) -> dict:
         return {
             "route": "blocked",
             "answer": (
-                "Access denied. HR policy information is available only "
-                "to authorized employees, doctors, HR staff, and administrators."
+                "This employee leave-policy information is restricted to "
+                "authorized staff. Please sign in with an employee, doctor, "
+                "HR, or administrator account."
             ),
             "sources": [],
             "documents": [],

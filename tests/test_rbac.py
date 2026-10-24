@@ -120,6 +120,28 @@ def test_hr_role_reads_the_staff_tier(monkeypatch):
     assert calls == [{"public", "staff"}]
 
 
+def test_anonymous_misspelled_leave_policy_gets_access_message(monkeypatch):
+    _patch(monkeypatch, "rag")
+    calls = _record_rag(monkeypatch)
+
+    state = run_agent("hospital leave poilcy")
+
+    assert state["route"] == "blocked"
+    assert "restricted to authorized staff" in state["answer"]
+    assert "employee" in state["answer"]
+    assert calls == []
+
+
+def test_employee_can_ask_misspelled_leave_policy(monkeypatch):
+    _patch(monkeypatch, "rag")
+    calls = _record_rag(monkeypatch)
+
+    state = run_agent("hospital leave poilcy", user=_user(Role.employee))
+
+    assert state["route"] == "rag"
+    assert calls == [{"public", "staff"}]
+
+
 @pytest.mark.parametrize("role", [Role.doctor, Role.admin])
 def test_doctor_and_admin_rag_calls_are_scoped_to_both_tiers(monkeypatch, role):
     _patch(monkeypatch, "rag")
