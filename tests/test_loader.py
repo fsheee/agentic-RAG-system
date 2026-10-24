@@ -51,6 +51,7 @@ def test_documents_are_tagged_with_their_access_tier(knowledge_base):
     """The retriever filters on this field, so every chunk must carry it."""
     (knowledge_base / "hr_policy.txt").write_text("Leave policy.", encoding="utf-8")
     _write_pdf(knowledge_base / "hospital_info.pdf")
+    _write_pdf(knowledge_base / "hospital_policy.pdf")
 
     documents = load_documents()
 
@@ -59,7 +60,11 @@ def test_documents_are_tagged_with_their_access_tier(knowledge_base):
         for doc in documents
     }
 
-    assert tiers == {"hr_policy.txt": "staff", "hospital_info.pdf": "public"}
+    assert tiers == {
+        "hr_policy.txt": "staff",
+        "hospital_info.pdf": "public",
+        "hospital_policy.pdf": "staff",
+    }
 
 
 def test_unlisted_documents_default_to_public(knowledge_base):

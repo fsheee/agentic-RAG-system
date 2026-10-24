@@ -18,7 +18,7 @@ DOCUMENT_ACCESS = {
     # Visiting hours, visitor limits, emergency services, location.
     "hospital_info.pdf": PUBLIC,
     # Appointment, identification, privacy, ICU visitors, safety, children.
-    "hospital_policy.pdf": PUBLIC,
+    "hospital_policy.pdf": STAFF,
     # Employee handbook: leave, WFH, probation, notice, reimbursement,
     # code of conduct, exit.
     "hr_policy.txt": STAFF,

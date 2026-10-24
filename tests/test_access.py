@@ -26,8 +26,8 @@ def test_hospital_information_is_public():
     assert access_for_source("knowledge_base\\hospital_info.pdf") == PUBLIC
 
 
-def test_hospital_policy_is_public():
-    assert access_for_source("knowledge_base/hospital_policy.pdf") == PUBLIC
+def test_hospital_policy_is_staff_only():
+    assert access_for_source("knowledge_base/hospital_policy.pdf") == STAFF
 
 
 def test_hr_policy_is_staff_only():
@@ -57,12 +57,23 @@ def test_unknown_role_fails_closed_to_public():
 
 
 def test_hr_policy_is_never_reachable_without_a_staff_role():
-    """The tier holding hr_policy.txt is excluded for every non-staff role."""
+    """Staff documents are excluded for every non-staff role."""
     for role in ALL_ROLES + [None, "unknown"]:
         if role in ("doctor", "employee", "hr", "admin"):
             continue
 
         assert STAFF not in tiers_for_role(role), role
+
+
+@pytest.mark.parametrize("role", ["doctor", "employee", "hr", "admin"])
+def test_staff_roles_can_read_hospital_policy(role):
+    assert access_for_source("knowledge_base/hospital_policy.pdf") in tiers_for_role(role)
+
+
+def test_patients_cannot_read_hospital_policy():
+    assert access_for_source("knowledge_base/hospital_policy.pdf") not in tiers_for_role(
+        "patient"
+    )
 
 
 def test_every_application_role_has_an_explicit_policy():

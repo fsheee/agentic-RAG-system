@@ -349,8 +349,8 @@ enters the prompt, and can never be cited.
 
 | Document | Tier |
 | --- | --- |
-| `hospital_info.pdf`, `hospital_policy.pdf` | public |
-| `hr_policy.txt` | staff |
+| `hospital_info.pdf` | public |
+| `hospital_policy.pdf`, `hr_policy.txt` | staff |
 
 | Role | Tiers readable |
 | --- | --- |
@@ -360,6 +360,12 @@ enters the prompt, and can never be cited.
 
 Unlisted files default to public, so adding a document cannot silently leak or
 restrict it — change `DOCUMENT_ACCESS` explicitly for anything sensitive.
+After changing a document's access tier, re-run ingestion so its Qdrant
+metadata is updated:
+
+```bash
+uv run python -m app.ingest
+```
 
 **Appointment data** is private: patients reach only their own linked `Patient`
 row and doctors only their own linked `Doctor` row (`Patient.user_id` /
