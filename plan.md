@@ -13,8 +13,9 @@ Phase 1 (RAG foundation) is complete. Phase 2 (agentic orchestration) covers
 the agent, tools, guardrails, rewrite-before-routing, Neon, auth, RBAC,
 document access control, conversation memory, booking, groundedness
 validation, observability and reliability hardening, the REST surface and
-evals. The Next.js frontend was **removed from this repository**; the API
-keeps the CORS allow-list for a separately deployed UI. What remains is
+evals. The Next.js frontend in `frontend/` provides the chat interface,
+registration, login, and API client; it calls the FastAPI backend and uses
+the configured CORS allow-list. What remains is
 containers, CI and deployment.
 
 Test suite: **314 passing** (`uv run python -m pytest -q` from the repo root).
@@ -335,13 +336,17 @@ All in `backend/app/api.py`, `db.py`, `llm.py`, `config.py`:
 
 ### Frontend
 
-- **No longer in this repository.** `frontend/` (Next.js App Router chat UI:
-  `app/page.tsx`, `app/login`, `app/register`, `lib/auth.tsx`, `lib/api.ts`)
-  was deleted from the working tree; whatever UI is deployed now lives
-  elsewhere. The API is unchanged and still expects a browser client:
-  `ALLOWED_ORIGINS` must list its origin, and conversation memory remains
-  sign-in only (an anonymous visitor sends no `conversation_id`, and the
-  thread must reset on sign-in/sign-out so an id never crosses identities).
+- `frontend/` is the Next.js App Router client: `app/page.tsx` contains the
+  chat UI, `app/login` and `app/register` provide authentication screens, and
+  `lib/auth.tsx` / `lib/api.ts` manage auth state and backend requests.
+- The browser talks only to FastAPI. `NEXT_PUBLIC_API_URL` in
+  `frontend/.env.local` selects the API base URL; the backend's
+  `ALLOWED_ORIGINS` must allow the frontend origin.
+- Conversation memory is signed-in only. Anonymous requests omit
+  `conversation_id`, and the frontend resets the thread on sign-in/sign-out
+  so an id never crosses identities.
+- Run locally with `cd frontend`, `npm ci`, copy `.env.example` to
+  `.env.local`, then `npm run dev`.
 
 ---
 
@@ -435,8 +440,8 @@ environment variables — never committed.
   Dockerfile yet to encode it. Pytest is unaffected (`pythonpath` in
   `pyproject.toml`).
 - **`CLAUDE.md` is empty** (its content was wiped in the working tree), and
-  **`README.md` has drifted**: it still documents the removed `frontend/`,
-  `app/` paths, and "78 tests". The code plus this file and `ISSUE.MD` are
+  **`README.md` has drifted**: it still documents old `app/` paths and
+  "78 tests". The code plus this file and `ISSUE.MD` are
   the source of truth until those are rewritten.
 
 ---

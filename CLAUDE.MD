@@ -9,9 +9,11 @@ An **Agentic RAG** healthcare assistant in two phases, one repo:
 - **Phase 1 — RAG:** retrieval-augmented answering over `knowledge_base/` (Qdrant + LLM) with source citations.
 - **Phase 2 — Agentic:** a LangGraph agent that routes each turn between RAG, relational data (Neon PostgreSQL), and an appointment-booking workflow, exposed as a FastAPI API.
 
-The Python package lives in `backend/app/`. The Next.js frontend was **removed from this repo**; the API keeps a CORS allow-list for a separately deployed UI.
+The Python package lives in `backend/app/`; the Next.js client lives in
+`frontend/`. The frontend calls the FastAPI API only; keep its
+`NEXT_PUBLIC_API_URL` and the backend `ALLOWED_ORIGINS` configuration aligned.
 
-`plan.md` is the authoritative status of the build; `ISSUE.MD` records the problems solved and the open rough edges. Read both before making non-trivial changes. `README.md` has drifted (still mentions `frontend/`, `app/` paths, "78 tests") — do not treat it as source of truth.
+`plan.md` is the authoritative status of the build; `ISSUE.MD` records the problems solved and the open rough edges. Read both before making non-trivial changes. `README.md` documents setup for both frontend and backend; consult `plan.md` for current implementation status.
 
 ## Commands
 
@@ -26,6 +28,10 @@ uv run python -m app.ingest          # ingest knowledge_base/ (idempotent; run f
 uv run uvicorn app.api:app --reload  # run the API
 uv run python main.py                # Phase 1 CLI
 ```
+
+Frontend: from `frontend/`, run `npm ci`, copy `.env.example` to
+`.env.local`, set `NEXT_PUBLIC_API_URL` if the API is not at
+`http://localhost:8000`, then run `npm run dev`.
 
 There is no linter configured. Tests mock Qdrant, Neon, and LLMs; `tests/conftest.py` installs an effectively unlimited rate limiter for the suite (every `TestClient` request shares one address).
 

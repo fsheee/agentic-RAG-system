@@ -1,8 +1,8 @@
-# Agentic RAG Backend
+# Agentic RAG Full-Stack System
 
-Backend for a healthcare assistant that answers questions from a hospital
-knowledge base, queries relational data, and books appointments. Built as an
-**Agentic RAG** system in two layers over one repository:
+Full-stack healthcare assistant that answers questions from a hospital
+knowledge base, queries relational data, and books appointments. The repository
+contains the FastAPI backend and a Next.js frontend in one project:
 
 - **RAG core** — retrieval-augmented answering over hospital documents
   (Qdrant + LLM) with grounded source citations.
@@ -11,10 +11,12 @@ knowledge base, queries relational data, and books appointments. Built as an
   booking workflow, served through FastAPI.
 
 The backend also exposes JWT auth, role-based access control, conversation
-memory, and plain REST CRUD for doctors and appointments.
+memory, and plain REST CRUD for doctors and appointments. The frontend provides
+the chat experience, sign-in, and registration; it communicates with FastAPI
+and never connects directly to Qdrant, PostgreSQL, or the LLM provider.
 
-> This document covers the **backend only**. There is no frontend in scope
-> here; the API is a plain HTTP service consumed by any client.
+Both parts are maintained and run from this repository. The API's
+`ALLOWED_ORIGINS` must include the origin used by the frontend.
 
 ---
 
@@ -113,6 +115,9 @@ agent-rag/
 │           ├── rag_tool.py       delegates to core.ask()
 │           ├── db_tool.py        doctors / fees / details
 │           └── booking_tool.py   booking workflow + cancel/reschedule
+├── frontend/                 Next.js chat UI, authentication, API client
+│   ├── app/                  chat, login, registration, shared layout
+│   └── lib/                  API client and auth state
 ├── knowledge_base/          hospital_info.pdf, hospital_policy.pdf, hr_policy.txt
 ├── eval/                    golden sets (router, RAG answers, guardrails)
 ├── tests/                   pytest suite
@@ -200,6 +205,26 @@ uv run uvicorn app.api:app --reload
 ```
 
 Interactive docs: <http://localhost:8000/docs>
+
+### 6. Run the frontend
+
+In another terminal:
+
+```bash
+cd frontend
+npm ci
+```
+
+Copy `frontend/.env.example` to `frontend/.env.local` and set
+`NEXT_PUBLIC_API_URL` to the FastAPI base URL (default:
+`http://localhost:8000`). Then start the Next.js app:
+
+```bash
+npm run dev
+```
+
+Open <http://localhost:3000>. For a different frontend origin, add that origin
+to the backend's `ALLOWED_ORIGINS` in the root `.env`.
 
 ### CLI (RAG only)
 
