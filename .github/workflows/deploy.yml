@@ -97,7 +97,11 @@ jobs:
         run: vercel pull --yes --environment=production --token="$VERCEL_TOKEN"
 
       - name: Build
-        run: vercel build --prod --token="$VERCEL_TOKEN"
+        run: |
+          echo "PATH=$PATH"
+          which uv
+          uv --version
+          vercel build --prod --token="$VERCEL_TOKEN"
 
       - name: Deploy prebuilt output
         id: deploy
