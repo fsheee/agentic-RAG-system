@@ -87,9 +87,8 @@ jobs:
 
       - name: Expose uv to Vercel
         run: |
-          sudo install -m 0755 "$(command -v uv)" /usr/local/bin/uv
-          echo "/usr/local/bin" >> "$GITHUB_PATH"
-          /usr/local/bin/uv --version
+          sudo install -m 0755 "$(command -v uv)" /usr/bin/uv
+          /usr/bin/uv --version
 
       - name: Set up Node
         uses: actions/setup-node@v4
@@ -103,7 +102,11 @@ jobs:
         run: vercel pull --yes --environment=production --token="$VERCEL_TOKEN"
 
       - name: Build
-        run: vercel build --prod --token="$VERCEL_TOKEN"
+        run: |
+          export PATH="/usr/bin:/usr/local/bin:$PATH"
+          command -v uv
+          uv --version
+          vercel build --prod --token="$VERCEL_TOKEN"
 
       - name: Deploy prebuilt output
         id: deploy
