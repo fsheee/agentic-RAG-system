@@ -45,7 +45,8 @@ jobs:
       - name: Set up uv
         uses: astral-sh/setup-uv@v6
         with:
-          python-version-: 3.11
+          version: latest
+          python-version: 3.11
           enable-cache: true
 
       - name: Install dependencies
@@ -78,7 +79,7 @@ jobs:
         uses: astral-sh/setup-uv@v6
         with:
          version: latest
-         python-version: "3.11"
+         python-version: 3.11
          enable-cache: true
       
       - name: Verify uv
