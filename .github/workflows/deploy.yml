@@ -49,11 +49,9 @@ jobs:
           enable-cache: true
 
       - name: Install dependencies
-        working-directory: ./agent-rag/backend
-        run: uv sync 
+        run: uv sync --frozen
 
       - name: Run tests
-        working-directory: ./agent-rag/backend
         run: uv run python -m pytest -q -m "not integration"
 
   deploy:
