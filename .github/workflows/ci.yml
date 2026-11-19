@@ -1,0 +1,82 @@
+name: CI
+
+# Test every branch except main. main is already covered by deploy.yml,
+# which runs the same backend suite before it releases, so running CI there
+# too would just duplicate the work on every merge.
+#
+# Nothing here talks to Neon, Qdrant or an LLM: the suite mocks all external
+# services, so no repository secrets are required.
+
+on:
+  pull_request:
+  push:
+    branches-ignore: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # backend/app/auth.py raises at import time when JWT_SECRET is missing.
+  # A throwaway value is enough because no test signs a real production token.
+  JWT_SECRET: ci-only-not-a-real-secret-do-not-use-in-production
+
+jobs:
+  backend:
+    name: Backend tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up uv and Python
+        uses: astral-sh/setup-uv@v6
+        with:
+          python-version-file: .python-version
+          enable-cache: true
+
+      # `--frozen` fails if uv.lock and pyproject.toml disagree, which is
+      # exactly the drift a CI run should catch.
+      - name: Install dependencies
+        run: uv sync --frozen
+
+      # The local-embeddings extra (torch) is deliberately not installed:
+      # tests mock the embedding provider, and the production deploy uses
+      # the Gemini API path.
+      - name: Run tests
+        run: uv run python -m pytest -q -m "not integration"
+
+  frontend:
+    name: Frontend build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: frontend
+    env:
+      # Inlined at build time; any reachable value works for a type/lint/build
+      # check. The real value lives in the Vercel project's environment.
+      NEXT_PUBLIC_API_URL: https://agentic-rag-with-gemini-embedding-m.vercel.app
+      NEXT_TELEMETRY_DISABLED: "1"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Build
+        run: npm run build
