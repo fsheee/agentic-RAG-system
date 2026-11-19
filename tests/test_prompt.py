@@ -50,3 +50,12 @@ def test_prompt_tells_model_to_say_dont_know():
     prompt_text = _template()
 
     assert "I don't know based on the provided documents." in prompt_text
+
+
+def test_prompt_answers_greetings_without_context():
+    """A greeting must not become "I don't know ..."."""
+    prompt_text = _template()
+
+    assert "Greetings are not questions" in prompt_text
+    assert "Do NOT search or use the context" in prompt_text
+    assert "Sources: None" in prompt_text

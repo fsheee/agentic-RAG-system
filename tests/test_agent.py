@@ -73,6 +73,35 @@ def test_rag_route_returns_core_answer_and_sources(monkeypatch):
     assert state["error"] is None
 
 
+def test_greeting_is_answered_without_llm_or_retrieval(monkeypatch):
+    """A bare "hi" must never reach the LLM router or the RAG prompt: the
+    prompt is context-only, so it would reply "I don't know"."""
+
+    def _boom(*args, **kwargs):
+        raise AssertionError("greeting must not call the LLM or retrieval")
+
+    _patch(monkeypatch, "rag")
+    monkeypatch.setattr(graph, "route_question", _boom)
+    monkeypatch.setattr(graph, "rewrite_query", _boom)
+    monkeypatch.setattr(graph.rag_tool, "search_knowledge_base", _boom)
+
+    state = run_agent("hello")
+
+    assert state["route"] == "greeting"
+    assert state["answer"].startswith("Hello!")
+    assert state["sources"] == []
+    assert state["error"] is None
+
+
+def test_greeting_with_a_question_still_routes_normally(monkeypatch):
+    _patch(monkeypatch, "rag")
+
+    state = run_agent("hello, what are the visiting hours?")
+
+    assert state["route"] == "rag"
+    assert state["answer"] == "Visiting hours are 10am to 8pm."
+
+
 def test_database_route_lists_doctors(monkeypatch):
     _patch(
         monkeypatch,

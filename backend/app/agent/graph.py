@@ -10,6 +10,7 @@ from app.db import get_engine
 from app.groundedness import is_grounded
 from app.guardrails import check_user_input
 from app.schema import Role, User
+from app.smalltalk import GREETING_REPLY, is_greeting
 
 # Backend role policy (checked in Python, never by the LLM):
 # - RAG answers are scoped to the document tiers the caller's role may
@@ -88,6 +89,20 @@ def guardrail_node(state: AgentState) -> dict:
         }
 
     return {"error": None}
+
+
+def greeting_node(state: AgentState) -> dict:
+    """Answer a bare greeting directly, with no retrieval and no LLM call.
+
+    Costs zero tokens, cannot be talked out of its reply, and keeps the
+    strict "answer from context only" contract of the RAG route intact.
+    """
+    return {
+        "answer": GREETING_REPLY,
+        "route": "greeting",
+        "sources": [],
+        "documents": [],
+    }
 
 
 def router_node(state: AgentState) -> dict:
@@ -388,6 +403,14 @@ def _route_from(state: AgentState) -> str:
     if state.get("error"):
         return "validate"
 
+    # A bare greeting needs no rewrite, no routing and no retrieval - answer
+    # it directly. A pending booking confirmation still outranks it: in that
+    # state the next turn is read as confirm/decline, so it must reach the
+    # booking node as usual.
+    if not booking_tool.is_awaiting_confirmation(state.get("conversation_id")):
+        if is_greeting(state["question"]):
+            return "greeting"
+
     return "rewrite"
 
 
@@ -395,6 +418,7 @@ def build_graph():
     graph = StateGraph(AgentState)
 
     graph.add_node("guardrail", guardrail_node)
+    graph.add_node("greeting", greeting_node)
     graph.add_node("rewrite", rewrite_node)
     graph.add_node("router", router_node)
     graph.add_node("rag", rag_node)
@@ -406,7 +430,7 @@ def build_graph():
     graph.add_conditional_edges(
         "guardrail",
         _route_from,
-        {"validate": "validate", "rewrite": "rewrite"},
+        {"validate": "validate", "greeting": "greeting", "rewrite": "rewrite"},
     )
     # Rewriting sits between the guardrail and the router: the router
     # classifies the resolved query, and the route it picks receives that
@@ -426,6 +450,7 @@ def build_graph():
     graph.add_edge("rag", "validate")
     graph.add_edge("database", "validate")
     graph.add_edge("booking", "validate")
+    graph.add_edge("greeting", "validate")
     graph.add_edge("validate", END)
 
     return graph.compile()

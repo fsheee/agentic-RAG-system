@@ -45,6 +45,23 @@ def test_ask_returns_answer_sources_documents(monkeypatch):
     ]
 
 
+def test_ask_greets_without_retrieval_or_llm(monkeypatch):
+    """A bare greeting must not embed the question or call the LLM: the
+    reply is deterministic, so there is nothing to retrieve or ground."""
+
+    def _boom(*args, **kwargs):
+        raise AssertionError("a greeting must not embed or call the LLM")
+
+    monkeypatch.setattr(core, "retrieve_documents", _boom)
+    monkeypatch.setattr(core, "get_llm", _boom)
+
+    result = core.ask("hi")
+
+    assert result["answer"].startswith("Hello!")
+    assert result["sources"] == []
+    assert result["documents"] == []
+
+
 def test_ask_joins_gemini_list_content(monkeypatch):
     monkeypatch.setattr(core, "retrieve_documents", lambda q, **kwargs: _documents())
     monkeypatch.setattr(

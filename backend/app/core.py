@@ -5,6 +5,7 @@ from app.llm import get_llm
 from app.prompt import RAG_PROMPT
 from app.retriever import retrieve_documents
 from app.rewriter import CONDENSE_PROMPT, standalone_query
+from app.smalltalk import GREETING_REPLY, is_greeting
 
 
 def build_context(
@@ -245,6 +246,12 @@ def ask(
     rewrite is not paid for twice. The answer prompt still receives
     `question` itself.
     """
+    # A bare greeting has nothing to retrieve and nothing to ground: answer
+    # it in Python so the "context only" rule in the prompt cannot turn
+    # "hi" into "I don't know based on the provided documents."
+    if is_greeting(question):
+        return {"answer": GREETING_REPLY, "sources": [], "documents": []}
+
     try:
         documents, blocks = build_context(
             question, access=access, history=history, search_query=search_query
