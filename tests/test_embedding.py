@@ -10,24 +10,41 @@ def test_raises_when_embedding_model_not_configured(monkeypatch):
         embedding.get_embeddings()
 
 
-def test_passes_configured_model_to_huggingface(monkeypatch):
+def test_gemini_model_uses_the_api_embeddings(monkeypatch):
+    captured = {}
+
+    monkeypatch.setattr(embedding, "EMBEDDING_MODEL", "models/gemini-embedding-001")
+    monkeypatch.setattr(
+        embedding,
+        "_gemini_embeddings",
+        lambda model: captured.update(model=model) or "embeddings",
+    )
+    monkeypatch.setattr(
+        embedding,
+        "_huggingface_embeddings",
+        lambda model: pytest.fail("Gemini model must not load torch"),
+    )
+
+    assert embedding.get_embeddings() == "embeddings"
+    assert captured["model"] == "models/gemini-embedding-001"
+
+
+def test_huggingface_model_uses_local_embeddings(monkeypatch):
     captured = {}
 
     monkeypatch.setattr(
-        embedding,
-        "EMBEDDING_MODEL",
-        "sentence-transformers/all-MiniLM-L6-v2",
+        embedding, "EMBEDDING_MODEL", "sentence-transformers/all-MiniLM-L6-v2"
     )
     monkeypatch.setattr(
         embedding,
-        "HuggingFaceEmbeddings",
-        lambda **kwargs: captured.update(kwargs) or "embeddings",
+        "_huggingface_embeddings",
+        lambda model: captured.update(model=model) or "embeddings",
+    )
+    monkeypatch.setattr(
+        embedding,
+        "_gemini_embeddings",
+        lambda model: pytest.fail("HF model must not call Gemini"),
     )
 
-    result = embedding.get_embeddings()
-
-    assert result == "embeddings"
-    assert (
-        captured["model_name"]
-        == "sentence-transformers/all-MiniLM-L6-v2"
-    )
+    assert embedding.get_embeddings() == "embeddings"
+    assert captured["model"] == "sentence-transformers/all-MiniLM-L6-v2"

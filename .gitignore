@@ -14,3 +14,5 @@ wheels/
 .vercel/
 
 qdrant_data/
+
+.vercel

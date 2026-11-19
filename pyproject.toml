@@ -13,7 +13,6 @@ dependencies = [
     "langchain-community>=0.4.2",
     "langchain-google-genai>=4.3.4",
     "langchain-groq>=1.1.3",
-    "langchain-huggingface>=1.2.2",
     "langchain-qdrant>=1.1.0",
     "langchain-text-splitters>=1.1.2",
     "langgraph>=1.2.11",
@@ -23,10 +22,19 @@ dependencies = [
     "pypdf>=6.15.0",
     "python-dotenv>=1.2.2",
     "qdrant-client>=1.19.0",
-    "sentence-transformers>=5.7.0",
     "sqlmodel>=0.0.42",
-    "torch>=2.13.0",
     "uvicorn>=0.52.4",
+]
+
+# Local (sentence-transformers) embeddings are optional: the Gemini API path
+# needs no ML runtime, and installing torch would push the serverless bundle
+# past Vercel's 500 MB function limit. Install with:
+#   uv sync --extra local-embeddings
+[project.optional-dependencies]
+local-embeddings = [
+    "langchain-huggingface>=1.2.2",
+    "sentence-transformers>=5.7.0",
+    "torch>=2.13.0",
 ]
 
 [dependency-groups]
@@ -50,6 +58,11 @@ explicit = true
 
 [tool.uv.sources]
 torch = { index = "pytorch-cpu" }
+
+# Vercel's FastAPI preset looks for a top-level `app` in main.py; ours lives
+# in backend/app/api.py, so point the builder at it explicitly.
+[tool.vercel]
+entrypoint = "backend.app.api:app"
 
 [tool.pytest.ini_options]
 pythonpath = ["backend", "."]
