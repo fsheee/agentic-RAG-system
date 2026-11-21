@@ -5,7 +5,8 @@ name: CI
 # too would just duplicate the work on every merge.
 #
 # Nothing here talks to Neon, Qdrant or an LLM: the suite mocks all external
-# services, so no repository secrets are required.
+# services, so no repository secrets are required. The one database-backed job
+# uses a throwaway Postgres service container, not Neon.
 
 on:
   pull_request:
@@ -49,6 +50,51 @@ jobs:
       # the Gemini API path.
       - name: Run tests
         run: uv run python -m pytest -q -m "not integration"
+
+  backend-db:
+    name: Schema and DB invariants
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    # The unit suite creates its own SQLite schema, so it cannot catch a
+    # constraint that is missing from the real schema/seed path. This job
+    # builds a throwaway Postgres from scratch, applies app.seed, then runs
+    # the DB-level integration tests against it.
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd pg_isready --health-interval 10s
+          --health-timeout 5s --health-retries 5
+    env:
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/test
+      # Throwaway value: auth.py raises at import time when JWT_SECRET is unset.
+      JWT_SECRET: ci-only-not-a-real-secret-do-not-use-in-production
+      # app.seed and app.* resolve only with backend/ on the path.
+      PYTHONPATH: backend
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up uv and Python
+        uses: astral-sh/setup-uv@v6
+        with:
+          python-version-file: .python-version
+          enable-cache: true
+
+      - name: Install dependencies
+        run: uv sync --frozen
+
+      # Fresh database: create_all() + the explicit column/index migrations.
+      # This is what a new Neon branch or deployment gets, and the integration
+      # tests below assert the booking constraint it leaves behind.
+      - name: Apply schema and seed data
+        run: uv run python -m app.seed
+
+      - name: Run database integration tests
+        run: uv run python -m pytest -q -m integration tests/test_booking_constraint.py
 
   frontend:
     name: Frontend build

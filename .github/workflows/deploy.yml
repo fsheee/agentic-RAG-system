@@ -1,6 +1,9 @@
 name: Deploy
 
-# Test on every PR and push; deploy to Vercel only from main after tests pass.
+# Run the backend suite on main and deploy to Vercel only if it passes.
+# Pull requests are covered by ci.yml (backend + frontend build), so this
+# workflow is push-only — otherwise every PR would run the backend suite
+# twice under two different check names.
 #
 # Required repository secrets:
 #   VERCEL_TOKEN      — Vercel personal/team token
@@ -19,12 +22,10 @@ name: Deploy
 on:
   push:
     branches: [main]
-  pull_request:
   workflow_dispatch:
 
 concurrency:
   group: deploy-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read
@@ -57,7 +58,7 @@ jobs:
   deploy:
     name: Deploy to Vercel
     needs: test
-    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     environment:

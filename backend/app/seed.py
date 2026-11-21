@@ -61,6 +61,33 @@ def _add_missing_columns():
         session.commit()
 
 
+def _add_missing_indexes():
+    """Constraints that create_all() cannot add to an existing table.
+
+    Booking uniqueness must ignore cancelled rows: cancellation keeps the row
+    (status='cancelled'), so a plain UNIQUE (doctor_id, appointment_date,
+    start_time) would make a cancelled slot permanently unbookable. The DROP
+    is what migrates an environment that still has the old plain constraint —
+    it must run first, because a constraint-backed index with the same name
+    would make the CREATE below a no-op.
+    """
+    with Session(get_engine()) as session:
+        session.execute(
+            text(
+                "ALTER TABLE appointment "
+                "DROP CONSTRAINT IF EXISTS unique_doctor_booking"
+            )
+        )
+        session.execute(
+            text(
+                "CREATE UNIQUE INDEX IF NOT EXISTS unique_doctor_booking "
+                "ON appointment (doctor_id, appointment_date, start_time) "
+                "WHERE status = 'booked'"
+            )
+        )
+        session.commit()
+
+
 def _seed_admin():
     """Create the initial admin from ADMIN_EMAIL/ADMIN_PASSWORD.
 
@@ -97,6 +124,7 @@ def _seed_admin():
 def seed():
     create_tables()
     _add_missing_columns()
+    _add_missing_indexes()
     _seed_admin()
 
     with Session(get_engine()) as session:
