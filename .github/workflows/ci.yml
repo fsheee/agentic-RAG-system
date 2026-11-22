@@ -4,9 +4,14 @@ name: CI
 # which runs the same backend suite before it releases, so running CI there
 # too would just duplicate the work on every merge.
 #
-# Nothing here talks to Neon, Qdrant or an LLM: the suite mocks all external
-# services, so no repository secrets are required. The one database-backed job
-# uses a throwaway Postgres service container, not Neon.
+# Nothing here talks to Neon, Qdrant, an LLM or Vercel: the suite mocks all
+# external services, so no repository secrets are required. The one
+# database-backed job uses a throwaway Postgres service container, not Neon.
+#
+# deploy.yml (main only) publishes both Vercel projects — backend and
+# frontend. This workflow therefore needs no VERCEL_* secrets; it validates
+# the workflow files themselves so a syntax error in deploy.yml fails on the
+# PR instead of silently never running after merge.
 
 on:
   pull_request:
@@ -126,3 +131,20 @@ jobs:
 
       - name: Build
         run: npm run build
+
+  workflows:
+    name: Workflow files
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      # deploy.yml only runs after merge, so a syntax error there would stay
+      # invisible until it silently fails to start. Parse every workflow file
+      # on the PR instead.
+      - name: Parse workflow YAML
+        run: |
+          for file in .github/workflows/*.yml; do
+            ruby -ryaml -e 'YAML.load_file(ARGV.fetch(0))' "$file"
+            echo "ok: $file"
+          done
