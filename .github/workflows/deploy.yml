@@ -15,6 +15,13 @@ name: Deploy
 #   frontend  prj_r8m4yQg5A7HKqjcrcEyZlQ4oNCiT
 #             (agentic-ragsystem)
 #
+# Python version: .python-version picks the Vercel function runtime, while the
+# project's UV_PYTHON env var picks the interpreter uv installs wheels for.
+# Both are 3.14. If they drift, pure-Python imports still work but compiled
+# extensions such as pydantic_core fail at cold start, e.g.
+#   ModuleNotFoundError: No module named 'pydantic_core._pydantic_core'
+# The "Check Python ABI" step below fails the build if that happens.
+#
 # Required Vercel runtime settings (Production environment) live in the
 # dashboard, not here:
 #   backend:  PYTHONPATH=backend, DATABASE_URL, JWT_SECRET, GOOGLE_API_KEY,
@@ -163,6 +170,30 @@ jobs:
 
       - name: Build
         run: vercel build --prod
+
+      # The function runtime comes from .python-version; the wheels come from
+      # UV_PYTHON. When those disagree, pydantic_core's compiled module is
+      # built for the wrong ABI and the function dies at cold start with
+      # "No module named 'pydantic_core._pydantic_core'". Catch it before the
+      # deploy instead of in production logs.
+      - name: Check Python ABI matches the function runtime
+        run: |
+          cfg=$(find .vercel/output/functions -name .vc-config.json -print -quit)
+          if [ -z "$cfg" ]; then
+            echo "::warning::No .vc-config.json in the build output; skipping ABI check"
+            exit 0
+          fi
+          runtime=$(jq -r '.runtime' "$cfg")
+          abi="cp${runtime#python}"
+          abi="${abi//./}"
+          echo "runtime=$runtime abi=$abi"
+          so=$(find .vercel/output/functions -name "_pydantic_core.${abi}-*.so" -print -quit)
+          if [ -z "$so" ]; then
+            echo "::error::pydantic_core has no ${abi} build for ${runtime}. Keep UV_PYTHON, .python-version and the function runtime aligned."
+            find .vercel/output/functions -name "_pydantic_core*" -print
+            exit 1
+          fi
+          echo "OK: $so"
 
       - name: Deploy prebuilt output
         id: deploy
