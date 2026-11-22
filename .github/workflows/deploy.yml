@@ -1,10 +1,11 @@
 name: Deploy
 
-# Runs on main only: test the push, then publish BOTH Vercel projects.
-# Pull requests and feature branches are covered by ci.yml, so the suite
-# does not run twice per merge.
+# Runs on main only: test the push, check the Vercel credentials, then
+# publish BOTH Vercel projects. Pull requests and feature branches are
+# covered by ci.yml, so the suite does not run twice per merge.
 #
-# Required repository secrets (Settings -> Secrets and variables -> Actions):
+# Required repository secrets (Settings -> Secrets and variables -> Actions,
+# "Secrets" tab — NOT the "Variables" tab):
 #   VERCEL_TOKEN  — Vercel token with access to the team below
 #   VERCEL_ORG_ID — team_OuVuWFb4CX4GlaWa2YbnNyAC
 #
@@ -58,15 +59,60 @@ jobs:
       - name: Run tests
         run: uv run python -m pytest -q -m "not integration"
 
+  # One place to fail if the secrets are missing or the token is invalid,
+  # with a message that says which. Without this, both deploy jobs fail at
+  # the same opaque point.
+  preflight:
+    name: Vercel credentials
+    needs: test
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment:
+      name: production
+    env:
+      VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+      VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+    steps:
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install Vercel CLI
+        run: npm install --global vercel@latest
+
+      - name: Check required secrets
+        run: |
+          missing=0
+          if [ -z "$VERCEL_TOKEN" ]; then
+            echo "::error::VERCEL_TOKEN is empty. Add it as an Actions SECRET (Settings -> Secrets and variables -> Actions -> Secrets), not as a variable."
+            missing=1
+          else
+            echo "VERCEL_TOKEN is set (${#VERCEL_TOKEN} characters)"
+          fi
+          if [ -z "$VERCEL_ORG_ID" ]; then
+            echo "::error::VERCEL_ORG_ID is empty. Expected team_OuVuWFb4CX4GlaWa2YbnNyAC."
+            missing=1
+          else
+            echo "VERCEL_ORG_ID=$VERCEL_ORG_ID"
+          fi
+          exit $missing
+
+      # The CLI reads VERCEL_TOKEN from the environment. A revoked or
+      # mistyped token fails here, not halfway through a build.
+      - name: Verify token
+        run: vercel whoami
+
   deploy-backend:
     name: Deploy backend (FastAPI)
-    needs: test
+    needs: [test, preflight]
     runs-on: ubuntu-latest
     timeout-minutes: 25
     environment:
       name: production
       url: ${{ steps.deploy.outputs.url }}
     env:
+      VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
       VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
       VERCEL_PROJECT_ID: prj_XoGPPcXH1nFTEUgMI5uXzUf0l4Rc
       # Helps `vercel build` resolve the `app.*` imports while analysing the
@@ -100,29 +146,22 @@ jobs:
           sudo install -m 0755 "$(command -v uv)" /usr/local/bin/uv
           uv --version
 
-      # Fails here, with a readable message, if the token or org id is wrong
-      # — instead of an opaque failure inside `vercel pull`.
-      - name: Verify Vercel credentials
-        run: |
-          vercel whoami --token="${{ secrets.VERCEL_TOKEN }}"
-          echo "org=$VERCEL_ORG_ID project=$VERCEL_PROJECT_ID"
-
       - name: Pull Vercel project settings
-        run: vercel pull --yes --environment=production --token=${{ secrets.VERCEL_TOKEN }}
+        run: vercel pull --yes --environment=production
 
       - name: Build
-        run: vercel build --prod --token=${{ secrets.VERCEL_TOKEN }}
+        run: vercel build --prod
 
       - name: Deploy prebuilt output
         id: deploy
         run: |
-          url=$(vercel deploy --prebuilt --prod --token=${{ secrets.VERCEL_TOKEN }})
+          url=$(vercel deploy --prebuilt --prod)
           echo "url=$url" >> "$GITHUB_OUTPUT"
           echo "Backend: $url" >> "$GITHUB_STEP_SUMMARY"
 
   deploy-frontend:
     name: Deploy frontend (Next.js)
-    needs: test
+    needs: [test, preflight]
     runs-on: ubuntu-latest
     timeout-minutes: 20
     environment:
@@ -132,6 +171,7 @@ jobs:
       run:
         working-directory: frontend
     env:
+      VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
       VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
       VERCEL_PROJECT_ID: prj_r8m4yQg5A7HKqjcrcEyZlQ4oNCiT
       NEXT_TELEMETRY_DISABLED: "1"
@@ -149,20 +189,15 @@ jobs:
       - name: Install Vercel CLI
         run: npm install --global vercel@latest
 
-      - name: Verify Vercel credentials
-        run: |
-          vercel whoami --token="${{ secrets.VERCEL_TOKEN }}"
-          echo "org=$VERCEL_ORG_ID project=$VERCEL_PROJECT_ID"
-
       - name: Pull Vercel project settings
-        run: vercel pull --yes --environment=production --token=${{ secrets.VERCEL_TOKEN }}
+        run: vercel pull --yes --environment=production
 
       - name: Build
-        run: vercel build --prod --token=${{ secrets.VERCEL_TOKEN }}
+        run: vercel build --prod
 
       - name: Deploy prebuilt output
         id: deploy
         run: |
-          url=$(vercel deploy --prebuilt --prod --token=${{ secrets.VERCEL_TOKEN }})
+          url=$(vercel deploy --prebuilt --prod)
           echo "url=$url" >> "$GITHUB_OUTPUT"
           echo "Frontend: $url" >> "$GITHUB_STEP_SUMMARY"
