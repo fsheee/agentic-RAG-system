@@ -98,10 +98,17 @@ jobs:
           fi
           exit $missing
 
-      # The CLI reads VERCEL_TOKEN from the environment. A revoked or
-      # mistyped token fails here, not halfway through a build.
+      # The CLI reads VERCEL_TOKEN from the environment, but pass it
+      # explicitly so a missing/invalid value is unambiguous. Capturing the
+      # output lets the failure text appear as an annotation.
       - name: Verify token
-        run: vercel whoami
+        run: |
+          vercel --version
+          if ! out=$(vercel whoami --token="$VERCEL_TOKEN" 2>&1); then
+            echo "::error::vercel whoami failed: ${out}"
+            exit 1
+          fi
+          echo "$out"
 
   deploy-backend:
     name: Deploy backend (FastAPI)
