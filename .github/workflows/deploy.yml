@@ -104,8 +104,13 @@ jobs:
       - name: Verify token
         run: |
           vercel --version
+          if printf '%s' "$VERCEL_TOKEN" | grep -q '[[:space:]]'; then
+            echo "::error::VERCEL_TOKEN contains whitespace or a newline; re-paste it"
+            exit 1
+          fi
           if ! out=$(vercel whoami --token="$VERCEL_TOKEN" 2>&1); then
-            echo "::error::vercel whoami failed: ${out}"
+            flat=$(printf '%s' "$out" | tr '\n' ' ')
+            echo "::error::vercel whoami failed: $flat"
             exit 1
           fi
           echo "$out"
