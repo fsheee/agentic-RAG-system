@@ -163,7 +163,7 @@ cp .env.example .env
 | `GROQ_API_KEY` | Groq API key | — |
 | `MODEL_NAME` | Groq model | `openai/gpt-oss-120b` |
 | `GOOGLE_API_KEY` | Gemini key — when set, the LLM switches to Gemini | — |
-| `GEMINI_MODEL` | Gemini model | `gemini-3.1-flash-lite` |
+| `GEMINI_MODEL` | Gemini model | `gemini-flash-lite-latest` |
 | `EMBEDDING_MODEL` | Embedding model. `models/*` or `gemini*` uses the Gemini API; anything else needs the `local-embeddings` extra | `models/gemini-embedding-001` |
 | `DATABASE_URL` | PostgreSQL connection string | — |
 | `POOL_RECYCLE_SECONDS` / `POOL_SIZE` / `POOL_MAX_OVERFLOW` / `POOL_TIMEOUT_SECONDS` | Connection-pool tuning (`pool_pre_ping` is always on) | `1800` / `5` / `10` / `30` |
