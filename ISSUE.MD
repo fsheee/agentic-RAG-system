@@ -138,8 +138,9 @@ lessons, not hypotheticals.
   import through `pythonpath = ["backend", "."]` in `pyproject.toml`;
   everything else needs `backend` on `PYTHONPATH` (see plan.md's setup
   step). `main.py` and `python -m app.*` fail bare with
-  `ModuleNotFoundError: No module named 'app'` until then. There is **no
-  Dockerfile in this tree** to encode the setting.
+  `ModuleNotFoundError: No module named 'app'` until then. Deployment solves
+  it without a Dockerfile: `[tool.vercel]` sets the entrypoint to
+  `backend.app.api:app` and the Vercel project sets `PYTHONPATH=backend`.
 - **The test suite rate-limited itself** — every `TestClient` request shares
   the address "testclient", so dozens of requests tripped the real limiter
   and cascaded 429s into unrelated tests. `tests/conftest.py` now installs an
@@ -219,13 +220,12 @@ Known and deliberately deferred — see `plan.md` for the full discussion:
   for an admin.
 - Rate limiting is in-process, per worker, keyed on the socket address;
   `X-Forwarded-For` is not trusted, so behind a proxy all callers share one
-  bucket. Needs Redis and a trusted-proxy policy before scaling out.
+  bucket. On Vercel serverless the counters are per warm instance, so the
+  60/min window is effectively multiplied. Needs Redis and a trusted-proxy
+  policy before scaling out.
 - No token revocation, no refresh tokens; a leaked JWT stays valid until it
   expires.
 - No security headers (HSTS, CSP, X-Content-Type-Options).
 - History is windowed, not summarised — very old context is forgotten.
 - `main.py` and `python -m app.*` / `uvicorn` need `backend` on
-  `PYTHONPATH`; there is no Dockerfile here to encode it.
-- `CLAUDE.md` is empty and `README.md` has drifted (removed `frontend/`,
-  `app/` paths, "78 tests"); the code plus `plan.md` and this file are the
-  source of truth.
+  `PYTHONPATH` locally; the Vercel project sets it for the deployed function.

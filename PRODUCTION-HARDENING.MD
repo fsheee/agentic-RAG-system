@@ -1,4 +1,4 @@
- # Production Hardening
+# Production Hardening
 
 ## Overview
 
@@ -35,11 +35,15 @@ Example response:
 
 ```json
 {
-  "status": "ok"
+  "status": "ok",
+  "database": "up"
 }
 ```
 
-This is a basic liveness check that confirms the API is responding. It does not guarantee that PostgreSQL, Qdrant, or the LLM provider is available.
+The probe runs a trivial Postgres query. It returns `200` when the database
+answers and `503` with `{"status": "degraded", "database": "down"}` when it
+does not, so an orchestrator can tell "serving" from "up but broken". It does
+not touch Qdrant or the LLM provider.
 
 ## 3. Rate Limiting
 
@@ -69,19 +73,24 @@ This checks whether a pooled database connection is still valid before using it,
 
 ## 6. LLM Timeout and Retry Configuration
 
-The LLM client is configured with a request timeout of 30 seconds and up to two retries.
+The LLM client uses `LLM_TIMEOUT_SECONDS` (default **60**) per attempt and
+`LLM_MAX_RETRIES` (default **2**) extra attempts for transient 429/5xx
+responses and dropped connections, on both Groq and Gemini.
 
-These settings help prevent requests from waiting indefinitely and allow certain transient failures to be retried.
-
-Actual timeout and retry behavior should also be tested under simulated provider failures.
+These settings prevent a stalled call from pinning a worker and let a dropped
+packet retry instead of failing the turn. Failure paths are covered by
+`tests/test_hardening.py`.
 
 ## 7. Request-Size Protection
 
-The API checks the declared `Content-Length` header and rejects requests larger than 1 MB with HTTP `413 Payload Too Large`.
+`MAX_REQUEST_BODY_BYTES` (default 1 MiB) is enforced twice: the declared
+`Content-Length` rejects the request before a byte is read, and a wrapped
+`receive()` counts bytes as they arrive, so chunked bodies and false headers
+are caught too. Both return `413`. The middleware is registered innermost, so
+the short-circuited response still carries CORS headers a browser can read.
 
-This is a basic safeguard against oversized requests.
-
-**Limitation:** Header-based validation alone is not sufficient to enforce a strict body-size limit for every request. Production deployment should also enforce request-size limits at the ASGI server or reverse proxy layer.
+**Limitation:** This is application-level only. A reverse proxy or platform
+edge should still cap request bodies before traffic reaches the app.
 
 ## 8. Validation Summary
 
@@ -92,10 +101,11 @@ This is a basic safeguard against oversized requests.
 | Rate limiting and HTTP 429 | Tested |
 | RAG and database-routed requests | Tested |
 | Database connection pre-ping | Configured |
-| Global exception handling | Implemented; failure-path testing pending |
-| LLM timeout and retries | Configured; failure-path testing pending |
-| Request-size protection | Basic check implemented; additional testing pending |
+| Global exception handling | Implemented; covered by `tests/test_hardening.py` |
+| LLM timeout and retries | Configured; failure paths covered by `tests/test_hardening.py` |
+| Request-size protection | Declared and streamed bytes; covered by `tests/test_hardening.py` |
+| Per-instance rate limiting on Vercel | Known limitation — counters are per warm instance |
 
 ## Conclusion
 
-These improvements strengthen the backend's basic reliability, observability, and request protection. They provide a foundation for deployment while leaving clear next steps for production readiness, including failure-path testing, persistent rate-limit storage for multiple instances, and stronger request-size enforcement.
+These improvements strengthen the backend's basic reliability, observability, and request protection, and they are deployed on Vercel. Remaining production work is persistent rate-limit storage (Redis) for multiple instances, token revocation/refresh, and security headers.

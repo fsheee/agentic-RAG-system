@@ -33,7 +33,9 @@ Frontend: from `frontend/`, run `npm ci`, copy `.env.example` to
 `.env.local`, set `NEXT_PUBLIC_API_URL` if the API is not at
 `http://localhost:8000`, then run `npm run dev`.
 
-There is no linter configured. Tests mock Qdrant, Neon, and LLMs; `tests/conftest.py` installs an effectively unlimited rate limiter for the suite (every `TestClient` request shares one address).
+There is no Python linter configured. Tests mock Qdrant, Neon, and LLMs; `tests/conftest.py` installs an effectively unlimited rate limiter for the suite (every `TestClient` request shares one address).
+
+CI (`.github/workflows/ci.yml`) runs on pull requests and non-`main` branches; a push to `main` is tested and deployed to Vercel by `.github/workflows/deploy.yml`. Deployment details live in `DEPLOYMENT.md`.
 
 ## Architecture
 
@@ -83,13 +85,13 @@ State (`agent/state.py`) carries `question, search_query, route, answer, sources
 
 ## Gotchas
 
-- **`PYTHONPATH=backend` is not optional** outside pytest. `main.py` and `python -m app.*` fail bare with `ModuleNotFoundError: No module named 'app'`. Encoding this for deployment is a pending item (no Dockerfile yet).
+- **`PYTHONPATH=backend` is not optional** outside pytest. `main.py` and `python -m app.*` fail bare with `ModuleNotFoundError: No module named 'app'`. The Vercel deployment encodes it with `[tool.vercel] entrypoint = "backend.app.api:app"` plus `PYTHONPATH=backend` in the project environment — no Dockerfile. Keep `.python-version` and `UV_PYTHON` at **3.14**, or `pydantic_core` fails at cold start.
 - **Booking state lives in Neon** (`PendingBooking`, unique `conversation_id`) — there is no in-process store and no shared default slot. Without a `conversation_id` there is no multi-turn booking state.
 - **Date/time parsing is strict on purpose**: bare numbers are never times (need `am`/`pm`, `hh:mm`, or an "at"-hour) and never appointment ids (id regex is anchored, rejects ordinals). `31 February` → `None` → asks again.
 - **Grounding is rag-route only**, and only when documents were retrieved. It costs an extra LLM call per grounded turn (up to three per turn with history, uncached).
 - **`check_slot()` is the single availability rule** shared by the agent workflow, reschedules, and `POST /appointments`. It has no calendar check — past dates are still bookable (known, deliberately deferred).
 - **The `/ask` log line never includes the question text.** Keep it that way.
-- Rate limiting is in-process, keyed on the socket address; `X-Forwarded-For` is deliberately not trusted.
+- Rate limiting is in-process, keyed on the socket address; `X-Forwarded-For` is deliberately not trusted. On Vercel serverless it is per-instance, so it only damps abuse — never treat it as a quota.
 
 ## Tests & evals
 

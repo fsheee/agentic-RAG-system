@@ -54,7 +54,7 @@ Role and identity always come from the signed JWT and are enforced in Python
 knowledge_base/ (PDF/TXT)
   ↓  loader.py     load + attach access tier to metadata
   ↓  splitter.py   chunk 500 / overlap 100
-  ↓  embedding.py  all-MiniLM-L6-v2
+  ↓  embedding.py  Gemini embeddings (models/gemini-embedding-001)
   ↓  ingest.py     deterministic IDs → idempotent upsert + stale pruning
 Qdrant
   ↓  retriever.py  top-k + access filter + relevance thresholds
@@ -121,8 +121,11 @@ agent-rag/
 ├── knowledge_base/          hospital_info.pdf, hospital_policy.pdf, hr_policy.txt
 ├── eval/                    golden sets (router, RAG answers, guardrails)
 ├── tests/                   pytest suite
+├── .github/workflows/       ci.yml (PRs / branches) + deploy.yml (main → Vercel)
 ├── main.py                  Phase-1 CLI (RAG only)
-├── pyproject.toml
+├── pyproject.toml           deps, pytest config, [tool.vercel] entrypoint
+├── requirements.txt         pinned set for the Vercel Python build
+├── .python-version          3.14 — Vercel function runtime
 └── .env.example
 ```
 
@@ -130,10 +133,13 @@ agent-rag/
 
 ## Requirements
 
-- Python 3.11+
+- Python 3.11+ locally; **3.14** for the Vercel deployment
+  (`.python-version`, `UV_PYTHON` and the function runtime must match)
 - [uv](https://docs.astral.sh/uv/) (recommended) or pip
 - A PostgreSQL database (a managed Neon instance works out of the box)
-- An LLM API key (Groq or Google Gemini)
+- A Qdrant instance — remote via `QDRANT_URL`, or local `qdrant_data/`
+- An LLM API key (Groq or Google Gemini) and a Gemini key for the default
+  embeddings
 
 ---
 
@@ -158,13 +164,14 @@ cp .env.example .env
 | `MODEL_NAME` | Groq model | `openai/gpt-oss-120b` |
 | `GOOGLE_API_KEY` | Gemini key — when set, the LLM switches to Gemini | — |
 | `GEMINI_MODEL` | Gemini model | `gemini-3.1-flash-lite` |
-| `EMBEDDING_MODEL` | HuggingFace embedding model | `sentence-transformers/all-MiniLM-L6-v2` |
+| `EMBEDDING_MODEL` | Embedding model. `models/*` or `gemini*` uses the Gemini API; anything else needs the `local-embeddings` extra | `models/gemini-embedding-001` |
 | `DATABASE_URL` | PostgreSQL connection string | — |
 | `POOL_RECYCLE_SECONDS` / `POOL_SIZE` / `POOL_MAX_OVERFLOW` / `POOL_TIMEOUT_SECONDS` | Connection-pool tuning (`pool_pre_ping` is always on) | `1800` / `5` / `10` / `30` |
 | `JWT_SECRET` | HMAC secret for signing tokens | — |
 | `JWT_EXPIRE_MINUTES` | Token lifetime | `60` |
 | `ADMIN_EMAIL` / `ADMIN_PASSWORD` | Initial admin created by the seed script | — |
 | `QDRANT_URL` | Qdrant server URL; empty = local mode (`qdrant_data/`) | — |
+| `QDRANT_API_KEY` | Qdrant API key (required when `QDRANT_URL` points at Qdrant Cloud) | — |
 | `QDRANT_COLLECTION_PREFIX` | Prefix for the Qdrant collection name | — |
 | `QDRANT_PATH` | Local-mode Qdrant folder | `<repo>/qdrant_data` |
 | `RETRIEVAL_THRESHOLD` | Minimum relevance score for a chunk to be used | `0.65` |
@@ -244,7 +251,7 @@ requirements. Pass the JWT as `Authorization: Bearer <token>`.
 | Method | Path | Auth | Description |
 | --- | --- | --- | --- |
 | `POST` | `/ask` | optional | Agent entry point (guardrail → route → answer). |
-| `GET` | `/health` | none | Liveness probe; `200 ok` when the DB answers, `503 degraded` otherwise. |
+| `GET` | `/health` | none | Liveness probe; `200 {"status":"ok","database":"up"}` when Postgres answers, `503 {"status":"degraded","database":"down"}` otherwise. |
 
 `POST /ask` request:
 
@@ -405,7 +412,8 @@ patients (their own) and admins; anonymous callers are denied outright.
 ## Testing
 
 Tests live in `tests/` and exercise each module in isolation (Qdrant, the
-database, and LLMs are mocked). 314 tests, verified with `--collect-only`.
+database, and LLMs are mocked). 335 tests collected; 319 pass with
+`-m "not integration"` (the remaining 16 need live Qdrant, Postgres, or an LLM).
 
 ```bash
 uv run pytest -q
@@ -419,9 +427,10 @@ directly. Golden-set evals live in `eval/` and back the `test_eval_*` modules:
 | `test_core.py` / `test_ingest.py` / `test_rag_chain.py` / `test_groundedness.py` | RAG core, idempotency, compat shim, groundedness |
 | `test_loader.py` / `test_splitter.py` / `test_embedding.py` / `test_vectorstore.py` | Ingestion pipeline |
 | `test_guardrails.py` / `test_rewriter.py` / `test_prompt.py` / `test_llm.py` | Prompt boundaries |
-| `test_agent.py` / `test_booking_parsing.py` / `test_cancel_intent.py` / `test_db_tool.py` | Agent routing and tools |
+| `test_agent.py` / `test_booking_parsing.py` / `test_cancel_intent.py` / `test_db_tool.py` / `test_smalltalk.py` | Agent routing and tools |
 | `test_auth.py` / `test_rbac.py` / `test_access.py` | Auth and access tiers |
 | `test_api.py` / `test_appointments_api.py` / `test_conversations_api.py` / `test_hardening.py` | HTTP endpoints, rate limiting, body-size cap, 500 handler |
+| `test_booking_constraint.py` | DB-level booking uniqueness (marked `integration`; CI runs it against Postgres) |
 | `test_eval_router.py` / `test_eval_retrieval.py` / `test_eval_rag_answers.py` / `test_eval_grounding.py` / `test_eval_guardrails.py` | Golden-set evals |
 
 Tests marked `integration` require live Qdrant, PostgreSQL, or an LLM key:
@@ -432,32 +441,37 @@ uv run pytest -q -m "not integration"
 
 ---
 
-## Deployment notes
+## Deployment
 
-This repository is not containerized yet — there is no `Dockerfile` or
-`docker-compose.yml` at the root. To run it as a service you need:
+Both halves are deployed on Vercel and released by
+`.github/workflows/deploy.yml` on every push to `main` (tests → credential
+preflight → build → Python-ABI check → deploy).
 
-- Python 3.11+ with `uv` (or an equivalent image) and `app.*` importable
-  (set `PYTHONPATH=backend`)
-- A reachable PostgreSQL instance via `DATABASE_URL`
-- A reachable Qdrant — remote via `QDRANT_URL`, or a mounted `qdrant_data/`
-  volume for local mode
+| Piece | Vercel project | URL |
+| --- | --- | --- |
+| Backend (FastAPI) | `agentic-rag-with-gemini-embedding-model` | https://agentic-rag-with-gemini-embedding-m.vercel.app |
+| Frontend (Next.js) | `agentic-ragsystem` | https://agentic-ragsystem.vercel.app |
 
-Start command:
+There is no Dockerfile: the backend entrypoint comes from `[tool.vercel]` in
+`pyproject.toml` (`backend.app.api:app`) plus `PYTHONPATH=backend` in the
+Vercel project. Python is **3.14** in `.python-version`, `UV_PYTHON`, and the
+function runtime — if they drift, compiled extensions such as `pydantic_core`
+fail at cold start (the ABI step fails the build first).
 
-```bash
-uvicorn app.api:app --host 0.0.0.0 --port 8000
-```
+Production environment variables live in the Vercel dashboard, never in the
+repo. Backend: `PYTHONPATH`, `DATABASE_URL`, `JWT_SECRET`, `GOOGLE_API_KEY`,
+`EMBEDDING_MODEL`, `QDRANT_URL`, `QDRANT_API_KEY`, `ALLOWED_ORIGINS`.
+Frontend: `NEXT_PUBLIC_API_URL`.
 
-Create the schema and seed data before the first request:
+Schema and vectors are created once per environment, not by the workflow:
 
 ```bash
 python -m app.seed     # tables + sample data
 python -m app.ingest   # knowledge base → Qdrant
 ```
 
-Health checks should target `/health` (returns `503` when the database is
-unreachable) rather than `/`, which has no route.
+Health checks target `/health` (503 when the database is unreachable), not
+`/`, which has no route. Full runbook and rollback notes: `DEPLOYMENT.md`.
 
 ---
 
@@ -469,9 +483,12 @@ unreachable) rather than `/`, which has no route.
 - **PostgreSQL** (Neon) — relational data, auth, conversations, pending bookings
 - **SQLModel** — schema + ORM
 - **Groq / Google Gemini** — LLM inference
-- **HuggingFace sentence-transformers** — embeddings
+- **Gemini embeddings** — default (`models/gemini-embedding-001`); local
+  HuggingFace/sentence-transformers is optional
 - **PyJWT + bcrypt** — auth
 - **uv** — dependency management
+- **Vercel** — hosting for the FastAPI backend and Next.js frontend
+- **GitHub Actions** — tests on every branch, deploy on `main`
 
 ---
 
@@ -481,7 +498,8 @@ The design notes live alongside the code as separate documents:
 
 | Document | What it covers |
 | --- | --- |
-| [`plan.md`](plan.md) | The full status of the build — what exists per phase, the required setup steps, what is left (Docker, CI/CD, deployment), and every known rough edge. The authoritative source of truth for where the project stands. |
+| [`plan.md`](plan.md) | The full status of the build — what exists per phase, the required setup steps, what is left, and every known rough edge. The authoritative source of truth for where the project stands. |
+| [`DEPLOYMENT.md`](DEPLOYMENT.md) | Vercel projects, GitHub Actions secrets, production environment variables, the Python 3.14/ABI trap, and the one-time seed/ingest steps. |
 | [`ISSUE.MD`](ISSUE.MD) | Institutional memory: the problems hit while building this (duplicate chunks, hallucinated answers, prompt injection, anonymous-access escalation, cross-user leaks, in-process booking state, date-parsing failures, config timing, routing) and how each was fixed. |
 | [`PRODUCTION-HARDENING.MD`](PRODUCTION-HARDENING.MD) | Reliability, observability and basic security: logging, `GET /health`, rate limiting, global exception handling, database connection resilience, LLM timeout/retry, and request-size protection. |
 | [`RAG-EVALUATION.MD`](RAG-EVALUATION.MD) | The quality dimensions used to evaluate retrieval and generation: correctness, faithfulness (groundedness), context relevance, answer relevance, and no-answer behaviour. |

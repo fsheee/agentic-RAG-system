@@ -3,7 +3,7 @@
 Status of the build: what exists today, what is left, and what is known to be
 imperfect. Kept in sync with the code rather than with the roadmap.
 
-Last updated: 2026-10-16
+Last updated: 2026-11-24
 
 ---
 
@@ -15,10 +15,12 @@ document access control, conversation memory, booking, groundedness
 validation, observability and reliability hardening, the REST surface and
 evals. The Next.js frontend in `frontend/` provides the chat interface,
 registration, login, and API client; it calls the FastAPI backend and uses
-the configured CORS allow-list. What remains is
-containers, CI and deployment.
+the configured CORS allow-list. CI and Vercel deployment are complete; what
+remains is optional containerization.
 
-Test suite: **314 passing** (`uv run python -m pytest -q` from the repo root).
+Test suite: **335 tests** collected; **319 pass** with
+`uv run python -m pytest -q -m "not integration"` (16 integration tests need
+live Qdrant, Postgres, or an LLM).
 
 The package lives in `backend/app/` (it moved out of `app/` in `1daa609`).
 Tests import it as `app.*` because `pyproject.toml` puts `backend` on
@@ -348,6 +350,30 @@ All in `backend/app/api.py`, `db.py`, `llm.py`, `config.py`:
 - Run locally with `cd frontend`, `npm ci`, copy `.env.example` to
   `.env.local`, then `npm run dev`.
 
+### CI/CD and deployment
+
+- **CI — `.github/workflows/ci.yml`** runs on pull requests and every branch
+  except `main`: the backend suite (external services mocked), a throwaway
+  Postgres 16 service that applies `app.seed` and runs the DB integration
+  tests, frontend `npm ci` → lint → build, and a YAML parse of every workflow
+  file so a broken `deploy.yml` fails on the PR instead of silently after
+  merge.
+- **Deploy — `.github/workflows/deploy.yml`** runs on `main` only: tests →
+  Vercel-credential preflight (`VERCEL_TOKEN`, `VERCEL_ORG_ID`) → build both
+  projects → Python-ABI check → `vercel deploy --prebuilt --prod`. Project
+  IDs are inlined; only the token and org id are secrets.
+- **Projects** — backend `agentic-rag-with-gemini-embedding-model`
+  (https://agentic-rag-with-gemini-embedding-m.vercel.app), frontend
+  `agentic-ragsystem` (https://agentic-ragsystem.vercel.app). Both confirmed
+  live.
+- **Runtime alignment** — `.python-version`, `UV_PYTHON`, and the Vercel
+  function runtime are all 3.14. If they drift, `pydantic_core` is built for
+  the wrong ABI and the function dies at cold start; the ABI step fails the
+  build first.
+- **One-time per environment** — `python -m app.seed`, then
+  `python -m app.ingest`. The workflow never creates schema or vectors.
+- Full runbook: `DEPLOYMENT.md`.
+
 ---
 
 ## Required setup step
@@ -373,28 +399,29 @@ PYTHONPATH=backend uv run uvicorn app.api:app --reload
 data is anchored to `<repo>/qdrant_data` by `vectorstore.py`, so the cwd no
 longer decides which store you get.
 
+For production (Vercel), the same two commands are run **once** against the
+production `DATABASE_URL` / `QDRANT_URL`; the deploy workflow does not create
+schema or vectors. `PYTHONPATH=backend` comes from the Vercel project's
+environment, not the build. See `DEPLOYMENT.md`.
+
 ---
 
 ## Next
 
-Ordered by dependency; each step should land and be tested before the next.
+CI/CD and deployment are done (see above). Remaining items are optional:
 
-### 1. Docker
+### 1. Containers (optional)
 
-`Dockerfile` for FastAPI, `docker-compose.yml` for FastAPI + Qdrant. Neon
-stays managed cloud — no local Postgres container. The `PYTHONPATH=backend`
-requirement from the setup step has to be encoded in the image.
+`Dockerfile` + `docker-compose.yml` for local/self-hosted runs (FastAPI +
+Qdrant). Vercel is the current target, so this is only needed if the project
+must run outside it. Neon stays managed cloud — no local Postgres container.
+The `PYTHONPATH=backend` requirement has to be encoded in the image.
 
-### 2. CI/CD
+### 2. Hardening follow-ups
 
-GitHub Actions: lint → tests → Docker build. Must run the `app.seed`
-migration against a test database. Note there is currently **no linter
-configured** in `pyproject.toml`.
-
-### 3. Deployment
-
-FastAPI + Qdrant hosted; Neon connection string and JWT secret injected as
-environment variables — never committed.
+Move rate limiting to Redis before running more than one instance, add token
+revocation/refresh tokens, and add security headers (HSTS, CSP,
+`X-Content-Type-Options`). See the rough edges below.
 
 ---
 
@@ -429,20 +456,18 @@ environment variables — never committed.
   reset on restart and are per worker; behind a reverse proxy every caller
   shares the proxy's IP and therefore one bucket (and `X-Forwarded-For` is
   not trusted, so there is no per-visitor split). Move to Redis with a
-  trusted-proxy policy before running more than one worker or instance.
-  Still missing entirely: token revocation, refresh tokens — a leaked JWT
-  stays valid until it expires.
+  trusted-proxy policy before running more than one worker or instance. On
+  Vercel serverless the counters are per warm instance, so the 60/min window
+  is effectively multiplied. Still missing entirely: token revocation,
+  refresh tokens — a leaked JWT stays valid until it expires.
 - **No security headers** (HSTS, CSP, X-Content-Type-Options).
 - **Module and CLI entry points need `backend` on `PYTHONPATH`.**
   `main.py` (`from backend.app.core import ask`) fails bare with
   `ModuleNotFoundError: No module named 'app'`, and `python -m app.seed` /
-  `uvicorn app.api:app` resolve only from the setup step above. There is no
-  Dockerfile yet to encode it. Pytest is unaffected (`pythonpath` in
-  `pyproject.toml`).
-- **`CLAUDE.md` is empty** (its content was wiped in the working tree), and
-  **`README.md` has drifted**: it still documents old `app/` paths and
-  "78 tests". The code plus this file and `ISSUE.MD` are
-  the source of truth until those are rewritten.
+  `uvicorn app.api:app` resolve only from the setup step above. Deployment
+  encodes it without a Dockerfile: `[tool.vercel]` points at
+  `backend.app.api:app` and the Vercel project sets `PYTHONPATH=backend`.
+  Pytest is unaffected (`pythonpath` in `pyproject.toml`).
 
 ---
 
