@@ -16,9 +16,9 @@ name: Deploy
 #             (agentic-ragsystem)
 #
 # Python version: .python-version picks the Vercel function runtime, and
-# UV_PYTHON below picks the interpreter uv installs wheels for. Both are 3.13.
-# If they drift, compiled extensions such as pydantic_core can fail at cold
-# start, e.g.
+# UV_PYTHON below picks the interpreter uv installs wheels for. Both are 3.14,
+# as is the project's Production UV_PYTHON. If they drift, compiled extensions
+# such as pydantic_core can fail at cold start, e.g.
 #   ModuleNotFoundError: No module named 'pydantic_core._pydantic_core'
 # The "Check Python ABI" step below fails the build if that happens.
 #
@@ -57,7 +57,10 @@ jobs:
       - name: Set up uv
         uses: astral-sh/setup-uv@v6
         with:
-          python-version-file: .python-version
+          # Vercel only uses a Python version that is already installed on the
+          # runner; otherwise it silently falls back to another version. The
+          # input is `python-version` (there is no `python-version-file`).
+          python-version: "3.14"
           enable-cache: true
 
       - name: Install dependencies
@@ -157,7 +160,7 @@ jobs:
         uses: astral-sh/setup-uv@v6
         with:
           version: latest
-          python-version-file: .python-version
+          python-version: "3.14"
           enable-cache: true
 
       - name: Expose uv to the Vercel builder
@@ -165,6 +168,9 @@ jobs:
           sudo install -m 0755 "$(command -v uv)" /usr/bin/uv
           sudo install -m 0755 "$(command -v uv)" /usr/local/bin/uv
           uv --version
+          # The builder only considers Python versions that are already
+          # installed on the runner, so make the .python-version one explicit.
+          uv python install "$(cat .python-version)"
 
       - name: Pull Vercel project settings
         run: vercel pull --yes --environment=production
@@ -177,6 +183,12 @@ jobs:
       # built for the wrong ABI and the function dies at cold start with
       # "No module named 'pydantic_core._pydantic_core'". Catch it before the
       # deploy instead of in production logs.
+      #
+      # Vercel's Python builder keeps distributions in .vercel/python/.venv
+      # and references them from the function's .vc-config.json
+      # `filePathMap`; they are not copied into .vercel/output/functions.
+      # Read that map instead of searching only the function directory, with a
+      # filesystem fallback for builders that do bundle the dependencies.
       - name: Check Python ABI matches the function runtime
         run: |
           cfg=$(find .vercel/output/functions -name .vc-config.json -print -quit)
@@ -188,10 +200,32 @@ jobs:
           abi="cpython-${runtime#python}"
           abi="${abi//./}"
           echo "runtime=$runtime abi=$abi"
-          so=$(find .vercel/output/functions -name "_pydantic_core.${abi}-*.so" -print -quit)
+
+          mapped=$(jq -r '.filePathMap // {} | .[]' "$cfg")
+          so=""
+          while IFS= read -r path; do
+            case "$path" in
+              */_pydantic_core.${abi}-*.so)
+                if [ -f "$path" ]; then
+                  so="$path"
+                  break
+                fi
+                ;;
+            esac
+          done <<< "$mapped"
+
+          if [ -z "$so" ]; then
+            so=$(find .vercel/output/functions .vercel/python \
+              -name "_pydantic_core.${abi}-*.so" -print -quit 2>/dev/null)
+          fi
+
           if [ -z "$so" ]; then
             echo "::error::pydantic_core has no ${abi} build for ${runtime}. Keep UV_PYTHON, .python-version and the function runtime aligned."
-            find .vercel/output/functions -name "_pydantic_core*" -print
+            {
+              printf '%s\n' "$mapped" | grep '/_pydantic_core.*\.so$' || true
+              find .vercel/output/functions .vercel/python \
+                -name "_pydantic_core*.so" -print 2>/dev/null
+            } | sed '/^$/d' | sort -u
             exit 1
           fi
           echo "OK: $so"
