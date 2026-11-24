@@ -41,6 +41,7 @@ def test_uses_groq_when_no_google_api_key(monkeypatch):
 def test_prefers_gemini_even_when_groq_key_exists(monkeypatch):
     monkeypatch.setattr(llm, "GOOGLE_API_KEY", "google-key")
     monkeypatch.setattr(llm, "GROQ_API_KEY", "groq-key")
+    monkeypatch.setattr(llm, "MODEL_NAME", "openai/gpt-oss-120b")
     monkeypatch.setattr(llm, "ChatGoogleGenerativeAI", lambda **kwargs: "gemini_llm")
     monkeypatch.setattr(llm, "ChatGroq", lambda **kwargs: "groq_llm")
 
