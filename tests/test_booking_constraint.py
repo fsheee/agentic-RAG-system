@@ -30,7 +30,12 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.pool import NullPool, StaticPool
 from sqlmodel import Session, SQLModel, select
 
-from app.crud import book_appointment
+from app.crud import (
+    book_appointment,
+    reschedule_appointment,
+    SlotTakenError,
+    update_appointment,
+)
 from app.schema import Appointment, Doctor, DoctorSchedule, Patient
 
 # The one DDL that defines the invariant. A plain UNIQUE constraint is the
@@ -157,11 +162,11 @@ def test_different_start_times_on_the_same_day_are_allowed(engine, seeded):
         assert len(session.exec(select(Appointment)).all()) == 2
 
 
-def test_book_appointment_raises_integrity_error_on_a_duplicate(engine, seeded):
-    """The CRUD helper surfaces the violation instead of silently duplicating.
+def test_book_appointment_raises_slot_taken_on_a_duplicate(engine, seeded):
+    """The write-time check converts the duplicate into a domain error.
 
-    It does not catch it: the API layer is responsible for turning this into
-    a 409 rather than a 500.
+    The API maps SlotTakenError to 409; a raw IntegrityError would become a
+    500, which is exactly the failure the guard exists to prevent.
     """
     with Session(engine) as session:
         book_appointment(
@@ -173,7 +178,93 @@ def test_book_appointment_raises_integrity_error_on_a_duplicate(engine, seeded):
             end_time=SLOT_END,
         )
 
-    with pytest.raises(IntegrityError):
+    with pytest.raises(SlotTakenError):
+        with Session(engine) as session:
+            book_appointment(
+                session,
+                doctor_id=seeded["doctor_id"],
+                patient_id=seeded["patient_id"],
+                appointment_date=SLOT_DAY,
+                start_time=SLOT_START,
+                end_time=SLOT_END,
+            )
+
+
+def test_book_appointment_rejects_an_overlapping_interval(engine, seeded):
+    """The guard is overlap-based, not exact-start only.
+
+    The partial unique index keys on start_time, so 07:15-07:45 would slip
+    past the index; the locked conflict check must catch it.
+    """
+    _book(engine, seeded["doctor_id"], seeded["patient_id"])
+
+    with pytest.raises(SlotTakenError):
+        with Session(engine) as session:
+            book_appointment(
+                session,
+                doctor_id=seeded["doctor_id"],
+                patient_id=seeded["patient_id"],
+                appointment_date=SLOT_DAY,
+                start_time=time(7, 15),
+                end_time=time(7, 45),
+            )
+
+
+def test_reschedule_into_a_taken_slot_raises_slot_taken(engine, seeded):
+    """Moving an appointment onto a booked slot is rejected and rolled back."""
+    _book(engine, seeded["doctor_id"], seeded["patient_id"], start=time(7, 0))
+    second = _book(
+        engine, seeded["doctor_id"], seeded["patient_id"], start=time(7, 30)
+    )
+
+    with pytest.raises(SlotTakenError):
+        with Session(engine) as session:
+            reschedule_appointment(
+                session, second, SLOT_DAY, time(7, 0), SLOT_END
+            )
+
+    with Session(engine) as session:
+        unchanged = session.get(Appointment, second)
+
+    assert unchanged.start_time == time(7, 30)
+
+
+def test_update_into_a_taken_slot_raises_slot_taken(engine, seeded):
+    """An admin move takes the same guard as a patient booking."""
+    _book(engine, seeded["doctor_id"], seeded["patient_id"], start=time(7, 0))
+    second = _book(
+        engine, seeded["doctor_id"], seeded["patient_id"], start=time(7, 30)
+    )
+
+    with pytest.raises(SlotTakenError):
+        with Session(engine) as session:
+            update_appointment(
+                session,
+                second,
+                appointment_date=SLOT_DAY,
+                start_time=time(7, 0),
+                end_time=SLOT_END,
+            )
+
+
+def test_integrity_error_is_converted_when_the_precheck_misses(
+    engine, seeded, monkeypatch
+):
+    """The database index is the last line of defence.
+
+    If a writer bypasses the locked pre-check, the partial unique index still
+    rejects the duplicate — and the CRUD helper turns that into the same
+    SlotTakenError instead of a 500.
+    """
+    import app.crud as crud
+
+    _book(engine, seeded["doctor_id"], seeded["patient_id"])
+
+    monkeypatch.setattr(
+        crud, "find_conflicting_appointment", lambda *args, **kwargs: None
+    )
+
+    with pytest.raises(SlotTakenError):
         with Session(engine) as session:
             book_appointment(
                 session,
@@ -368,5 +459,66 @@ def test_live_cancelled_slot_can_be_rebooked():
             connection.commit()
 
         assert len(created) == 2
+    finally:
+        _delete_rows(created)
+
+
+@needs_database
+@pytestmark_integration
+def test_live_app_level_concurrent_booking_creates_one_row():
+    """The application guard, not just the index, serializes two writers.
+
+    Both threads call ``book_appointment`` at the same moment. The doctor-row
+    lock makes the second re-check see the first commit, so it must raise
+    ``SlotTakenError`` — not IntegrityError, and certainly not a 500.
+    """
+    doctor_id, patient_id = _live_ids()
+    created = []
+    barrier = threading.Barrier(2)
+    outcomes = []
+
+    def worker(label):
+        engine = create_engine(os.getenv("DATABASE_URL"), poolclass=NullPool)
+        try:
+            with Session(engine) as session:
+                barrier.wait(timeout=10)
+                try:
+                    appointment = book_appointment(
+                        session,
+                        doctor_id=doctor_id,
+                        patient_id=patient_id,
+                        appointment_date=SLOT_DAY,
+                        start_time=SLOT_START,
+                        end_time=SLOT_END,
+                    )
+                    outcomes.append((label, "booked", appointment.id))
+                    created.append(appointment.id)
+                except SlotTakenError:
+                    outcomes.append((label, "slot_taken", None))
+        finally:
+            engine.dispose()
+
+    threads = [
+        threading.Thread(target=worker, args=(f"T{i}",)) for i in range(2)
+    ]
+    try:
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+
+        assert [outcome for _, outcome, _ in outcomes].count("booked") == 1
+        assert [outcome for _, outcome, _ in outcomes].count("slot_taken") == 1
+
+        with _live_connect() as connection:
+            rows = connection.execute(
+                text(
+                    "SELECT count(*) FROM appointment WHERE doctor_id = :doctor "
+                    "AND appointment_date = :day AND start_time = :start"
+                ),
+                {"doctor": doctor_id, "day": SLOT_DAY, "start": SLOT_START},
+            ).scalar()
+
+        assert rows == 1
     finally:
         _delete_rows(created)

@@ -189,6 +189,11 @@ the first database call, not at startup — so a missing value surfaces as a
 runtime error rather than an import failure. `GOOGLE_API_KEY` takes precedence
 over Groq when both are set.
 
+`POOL_SIZE` / `POOL_MAX_OVERFLOW` bound how many requests can hold a database
+connection at once. A booking keeps its connection while it waits on the
+per-doctor lock, so size the pool for peak concurrent bookings, not just
+average traffic.
+
 ### 3. Ingest the knowledge base
 
 ```bash
@@ -400,6 +405,13 @@ patients (their own) and admins; anonymous callers are denied outright.
   documents and replayed history are sanitized before entering any prompt.
 - **Booking needs confirmation.** Availability is checked first; the row is
   created only after an explicit "yes", and re-checked at booking time.
+- **Booking is race-safe.** The write locks the doctor row, re-runs the
+  overlap check inside that lock, and the partial unique index
+  `unique_doctor_booking` (booked rows only) is the final guard. Two
+  concurrent requests cannot both take one slot; the loser gets `409` from
+  REST or a "just booked — free slots that day: …" reply from `/ask`, never
+  a 500. Overlapping intervals (10:00-10:30 vs 10:15-10:45) are rejected,
+  while a cancelled row does not block rebooking.
 - **Every `/ask` is logged** with user, conversation, route, latency, and error.
 - **Hardened HTTP surface.** Per-IP sliding-window rate limit
   (`RATE_LIMIT_PER_MINUTE`, `/health` exempt, `429` when tripped), a 1 MiB
@@ -412,8 +424,8 @@ patients (their own) and admins; anonymous callers are denied outright.
 ## Testing
 
 Tests live in `tests/` and exercise each module in isolation (Qdrant, the
-database, and LLMs are mocked). 335 tests collected; 319 pass with
-`-m "not integration"` (the remaining 16 need live Qdrant, Postgres, or an LLM).
+database, and LLMs are mocked). 343 tests collected; 326 pass with
+`-m "not integration"` (the remaining 17 need live Qdrant, Postgres, or an LLM).
 
 ```bash
 uv run pytest -q

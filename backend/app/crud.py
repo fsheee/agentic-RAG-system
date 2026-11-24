@@ -1,5 +1,6 @@
 from datetime import date, datetime, time
 
+from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, select
 
 from app.schema import (
@@ -11,6 +12,41 @@ from app.schema import (
     Patient,
     PendingBooking,
 )
+
+
+class SlotTakenError(Exception):
+    """The requested slot is no longer free.
+
+    Raised when the write-time conflict check — or the database's partial
+    unique index, as a last resort — rejects a booking that another
+    transaction won. Carries the conflicting appointment's id and start time
+    (both ``None`` when only the index caught it) so callers can explain
+    what happened without re-querying.
+    """
+
+    def __init__(self, conflict: Appointment | None = None) -> None:
+        self.conflict_id = conflict.id if conflict is not None else None
+        self.conflict_start = (
+            conflict.start_time if conflict is not None else None
+        )
+        super().__init__("That slot was just booked by someone else.")
+
+
+def _lock_doctor(session: Session, doctor_id: int) -> None:
+    """Serialize appointment writes for one doctor.
+
+    The availability check and the insert must be one atomic step: without
+    this, two requests can both see a free slot, both pass the check, and
+    both try to take it. A row lock on the doctor is the simplest portable
+    guard — every writer for that doctor queues here, then re-checks
+    conflicts while holding the lock.
+
+    SQLite ignores ``FOR UPDATE`` (and serializes writers itself), so the
+    unit suite still runs unchanged; Postgres takes a real row lock.
+    """
+    session.exec(
+        select(Doctor.id).where(Doctor.id == doctor_id).with_for_update()
+    ).first()
 
 
 def get_doctors(session: Session) -> list[Doctor]:
@@ -100,6 +136,26 @@ def book_appointment(
     start_time: time,
     end_time: time,
 ) -> Appointment:
+    """Create a booking atomically.
+
+    The conflict check runs *inside* the doctor lock, so two callers cannot
+    both pass it. Raises ``SlotTakenError`` — never a raw IntegrityError —
+    when the slot was taken between the caller's earlier check and this
+    write, so the API can answer 409 and the agent can suggest alternatives.
+
+    Rolling back on the conflict is deliberate: it releases the lock before
+    the caller builds its response. Callers must not hold other pending
+    writes on this session when they book.
+    """
+    _lock_doctor(session, doctor_id)
+
+    conflict = find_conflicting_appointment(
+        session, doctor_id, appointment_date, start_time, end_time
+    )
+    if conflict is not None:
+        session.rollback()
+        raise SlotTakenError(conflict)
+
     appointment = Appointment(
         doctor_id=doctor_id,
         patient_id=patient_id,
@@ -110,7 +166,16 @@ def book_appointment(
         created_at=datetime.now(),
     )
     session.add(appointment)
-    session.commit()
+
+    try:
+        session.commit()
+    except IntegrityError as exc:
+        # Safety net for a writer that bypassed the lock (or a conflict the
+        # overlap check could not see): the partial unique index still
+        # refuses the duplicate.
+        session.rollback()
+        raise SlotTakenError() from exc
+
     session.refresh(appointment)
     return appointment
 
@@ -134,15 +199,41 @@ def reschedule_appointment(
     start_time: time,
     end_time: time,
 ) -> Appointment | None:
+    """Move an appointment, re-checking the slot under the doctor lock.
+
+    Excludes the appointment itself from the conflict check, so moving it to
+    a slot it already occupies is not a conflict. Raises ``SlotTakenError``
+    when another booking won the target slot.
+    """
     appointment = session.get(Appointment, appointment_id)
     if appointment is None:
         return None
+
+    _lock_doctor(session, appointment.doctor_id)
+
+    conflict = find_conflicting_appointment(
+        session,
+        appointment.doctor_id,
+        appointment_date,
+        start_time,
+        end_time,
+        exclude_appointment_id=appointment_id,
+    )
+    if conflict is not None:
+        session.rollback()
+        raise SlotTakenError(conflict)
 
     appointment.appointment_date = appointment_date
     appointment.start_time = start_time
     appointment.end_time = end_time
     session.add(appointment)
-    session.commit()
+
+    try:
+        session.commit()
+    except IntegrityError as exc:
+        session.rollback()
+        raise SlotTakenError() from exc
+
     session.refresh(appointment)
     return appointment
 
@@ -173,16 +264,49 @@ def update_appointment(
     session: Session, appointment_id: int, **changes
 ) -> Appointment | None:
     """Apply field changes to an appointment. Callers must have already
-    checked that the caller is allowed to change it."""
+    checked that the caller is allowed to change it.
+
+    Moving a booked appointment (or re-activating a cancelled one) takes the
+    same doctor lock and conflict check as booking, so an admin edit cannot
+    race a patient into the same slot. Raises ``SlotTakenError`` on conflict.
+    """
     appointment = session.get(Appointment, appointment_id)
     if appointment is None:
         return None
+
+    result_status = changes.get("status", appointment.status)
+    scheduling_changed = any(
+        field in changes
+        for field in ("appointment_date", "start_time", "end_time")
+    )
+
+    if result_status == "booked" and (
+        scheduling_changed or changes.get("status") == "booked"
+    ):
+        _lock_doctor(session, appointment.doctor_id)
+        conflict = find_conflicting_appointment(
+            session,
+            appointment.doctor_id,
+            changes.get("appointment_date", appointment.appointment_date),
+            changes.get("start_time", appointment.start_time),
+            changes.get("end_time", appointment.end_time),
+            exclude_appointment_id=appointment_id,
+        )
+        if conflict is not None:
+            session.rollback()
+            raise SlotTakenError(conflict)
 
     for field, value in changes.items():
         setattr(appointment, field, value)
 
     session.add(appointment)
-    session.commit()
+
+    try:
+        session.commit()
+    except IntegrityError as exc:
+        session.rollback()
+        raise SlotTakenError() from exc
+
     session.refresh(appointment)
     return appointment
 
@@ -204,7 +328,14 @@ def find_conflicting_appointment(
     appointment_date: date,
     start_time: time,
     end_time: time,
+    exclude_appointment_id: int | None = None,
 ) -> Appointment | None:
+    """The first booked appointment that overlaps ``[start_time, end_time)``.
+
+    Overlap, not just equality: the REST API accepts arbitrary start/end
+    pairs, so 10:00-10:30 and 10:15-10:45 are the same slot in practice.
+    ``exclude_appointment_id`` lets a reschedule ignore the row it is moving.
+    """
     appointments = session.exec(
         select(Appointment).where(
             Appointment.doctor_id == doctor_id,
@@ -214,6 +345,8 @@ def find_conflicting_appointment(
     ).all()
 
     for appointment in appointments:
+        if appointment.id == exclude_appointment_id:
+            continue
         if start_time < appointment.end_time and appointment.start_time < end_time:
             return appointment
 

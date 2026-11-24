@@ -32,6 +32,7 @@ from app.crud import (
     get_pending_booking,
     reschedule_appointment,
     save_pending_booking,
+    SlotTakenError,
 )
 from app.db import get_engine
 from app.schema import Appointment, Patient, User
@@ -348,8 +349,15 @@ def check_slot(
             f"Scheduled days: {days}."
         )
 
-    conflict = find_conflicting_appointment(session, doctor_id, day, start, end)
-    if conflict is not None and conflict.id != exclude_appointment_id:
+    conflict = find_conflicting_appointment(
+        session,
+        doctor_id,
+        day,
+        start,
+        end,
+        exclude_appointment_id=exclude_appointment_id,
+    )
+    if conflict is not None:
         message = (
             f"Sorry, {doctor_name} already has an appointment at "
             f"{conflict.start_time} on {day}."
@@ -522,30 +530,38 @@ def book_node(state: BookingState) -> dict:
                 "awaiting_confirmation": False,
             }
 
-        # Re-check at booking time: the availability check ran an earlier
-        # turn ago, and the same slot may have been taken (or booked twice)
-        # since then.
-        conflict = find_conflicting_appointment(
-            session, state["doctor_id"], state["day"], state["start"], end
-        )
-        if conflict is not None:
+        # The write itself re-checks the slot under a doctor lock, so this is
+        # the authoritative availability decision — the earlier check ran a
+        # turn ago and another request may have won the slot since.
+        try:
+            appointment = book_appointment(
+                session,
+                doctor_id=state["doctor_id"],
+                patient_id=patient.id,
+                appointment_date=state["day"],
+                start_time=state["start"],
+                end_time=end,
+            )
+        except SlotTakenError:
+            # Re-run the shared rule for a message that names the conflict
+            # and lists what is still free that day.
+            _, message = check_slot(
+                session,
+                state["doctor_id"],
+                state["doctor_name"],
+                state["day"],
+                state["start"],
+                end,
+            )
             return {
-                "answer": (
-                    f"Sorry, {state['doctor_name']} already has an appointment "
-                    f"at {conflict.start_time} on {state['day']}. "
+                "answer": message
+                or (
+                    f"Sorry, {state['doctor_name']} was just booked at "
+                    f"{state['start']} on {state['day']}. "
                     "Please pick another time."
                 ),
                 "awaiting_confirmation": False,
             }
-
-        appointment = book_appointment(
-            session,
-            doctor_id=state["doctor_id"],
-            patient_id=patient.id,
-            appointment_date=state["day"],
-            start_time=state["start"],
-            end_time=end,
-        )
         message = (
             f"Appointment booked with {state['doctor_name']} "
             f"({state['specialization']}) on {appointment.appointment_date} at "
@@ -1014,6 +1030,8 @@ def handle_appointment_action(question: str, user: User | None = None) -> str | 
             )
 
         end = end_time_for(start)
+        doctor_id = appointment.doctor_id
+        doctor_name = doctor.name if doctor else "The doctor"
 
         if doctor is not None:
             # Same rule as booking; exclude this appointment so it does
@@ -1030,7 +1048,26 @@ def handle_appointment_action(question: str, user: User | None = None) -> str | 
             if not available:
                 return message
 
-        moved = reschedule_appointment(session, appointment_id, day, start, end)
+        try:
+            moved = reschedule_appointment(
+                session, appointment_id, day, start, end
+            )
+        except SlotTakenError:
+            # Another writer won the target slot between the check above and
+            # the update. Re-run the rule for the usual "already booked" text.
+            _, message = check_slot(
+                session,
+                doctor_id,
+                doctor_name,
+                day,
+                start,
+                end,
+                exclude_appointment_id=appointment_id,
+            )
+            return message or (
+                "Sorry, that slot was just taken. Please pick another time."
+            )
+
         if moved is None:
             return f"Could not reschedule appointment #{appointment_id}."
 

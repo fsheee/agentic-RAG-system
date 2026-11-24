@@ -78,6 +78,12 @@ lessons, not hypotheticals.
   as two conversations interleaved. All state moved to the Neon
   `PendingBooking` table, keyed by a unique `conversation_id`; without an id
   there is no multi-turn booking state at all (`01ae0e5`).
+- **Double-booking race** — two requests could both pass `check_slot()`,
+  then both insert; the loser hit an unhandled `IntegrityError` and became a
+  500. The write path now locks the doctor row, re-checks overlap inside the
+  lock, and raises `SlotTakenError`, which the API turns into 409 and the
+  agent into a "just booked, free slots…" reply. The partial unique index
+  `unique_doctor_booking` remains the last line of defence.
 - **Unresolvable follow-ups** — "what her fee" is unclassifiable on its own.
   Fixed twice over: follow-up query rewriting (`57cbb0f`) plus
   doctor-referent resolution from history (`4be7593`), and then

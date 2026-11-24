@@ -18,8 +18,8 @@ registration, login, and API client; it calls the FastAPI backend and uses
 the configured CORS allow-list. CI and Vercel deployment are complete; what
 remains is optional containerization.
 
-Test suite: **335 tests** collected; **319 pass** with
-`uv run python -m pytest -q -m "not integration"` (16 integration tests need
+Test suite: **343 tests** collected; **326 pass** with
+`uv run python -m pytest -q -m "not integration"` (17 integration tests need
 live Qdrant, Postgres, or an LLM).
 
 The package lives in `backend/app/` (it moved out of `app/` in `1daa609`).
@@ -226,6 +226,13 @@ Qdrant holds vectors. They are not mixed.
 - `check_slot()` is still the single availability rule — weekly schedule
   window plus conflict check — shared by the booking workflow,
   reschedules, and `POST /appointments`.
+- **Booking writes are race-safe.** `book_appointment`,
+  `reschedule_appointment` and `update_appointment` take a
+  `SELECT ... FOR UPDATE` lock on the doctor, re-run the overlap check
+  inside that lock, and turn an `IntegrityError` from the partial unique
+  index into `SlotTakenError`. REST maps it to `409`; `/ask` replies with
+  the conflict and the free slots. The lock is per doctor, so it also covers
+  overlapping intervals that a `start_time` index alone would miss.
 - A taken slot is no longer a dead end: `free_slots_on()` subtracts booked
   appointments from the day's windows and the refusal lists what is still
   open ("Free slots that day: 11:00-12:00, ...").

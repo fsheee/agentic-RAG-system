@@ -32,6 +32,7 @@ from app.crud import (
     get_patient_by_user_id,
     get_patients,
     replace_doctor_schedule,
+    SlotTakenError,
     update_appointment,
 )
 from app.db import get_session
@@ -219,6 +220,25 @@ def _require_appointment(session: Session, appointment_id: int) -> Appointment:
     return appointment
 
 
+def _slot_conflict_detail(
+    doctor_name: str, day: date, start: time, error: SlotTakenError
+) -> str:
+    """Explain a lost booking race without leaking database internals.
+
+    A different start means an overlapping appointment won the slot; the
+    same start means an exact duplicate. Both are a 409, never a 500.
+    """
+    if error.conflict_start is not None and error.conflict_start != start:
+        return (
+            f"Sorry, {doctor_name} already has an appointment at "
+            f"{error.conflict_start} on {day}."
+        )
+    return (
+        f"Sorry, {doctor_name} was just booked at {start} on {day}. "
+        "Please pick another time."
+    )
+
+
 # --------------------------------------------------------------------------
 # Doctors
 # --------------------------------------------------------------------------
@@ -312,14 +332,26 @@ def create_appointment(
     if not available:
         raise HTTPException(status.HTTP_409_CONFLICT, message)
 
-    appointment = book_appointment(
-        session,
-        doctor_id=doctor.id,
-        patient_id=patient.id,
-        appointment_date=request.appointment_date,
-        start_time=request.start_time,
-        end_time=end,
-    )
+    doctor_name = doctor.name
+    try:
+        appointment = book_appointment(
+            session,
+            doctor_id=doctor.id,
+            patient_id=patient.id,
+            appointment_date=request.appointment_date,
+            start_time=request.start_time,
+            end_time=end,
+        )
+    except SlotTakenError as exc:
+        # Another request won the slot after check_slot() above. The write
+        # path re-checks under a doctor lock, so this is the authoritative
+        # answer — a 409 with a readable reason, not a 500.
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            _slot_conflict_detail(
+                doctor_name, request.appointment_date, request.start_time, exc
+            ),
+        ) from exc
 
     return _serialize_appointment(
         appointment, {doctor.id: doctor}, {patient.id: patient}
@@ -445,15 +477,16 @@ def admin_update_appointment(
     # Changing the date or time moves the slot, so it must still be valid.
     new_day = request.appointment_date or appointment.appointment_date
     new_start = request.start_time or appointment.start_time
+    doctor = get_doctor_by_id(session, appointment.doctor_id)
+    doctor_name = doctor.name if doctor else "The doctor"
 
     if request.appointment_date is not None or request.start_time is not None:
         new_end = end_time_for(new_start)
-        doctor = get_doctor_by_id(session, appointment.doctor_id)
 
         available, message = check_slot(
             session,
             appointment.doctor_id,
-            doctor.name if doctor else "The doctor",
+            doctor_name,
             new_day,
             new_start,
             new_end,
@@ -472,7 +505,13 @@ def admin_update_appointment(
             "No updatable fields were provided.",
         )
 
-    updated = update_appointment(session, appointment_id, **changes)
+    try:
+        updated = update_appointment(session, appointment_id, **changes)
+    except SlotTakenError as exc:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            _slot_conflict_detail(doctor_name, new_day, new_start, exc),
+        ) from exc
 
     return _appointments_response(session, [updated])[0]
 

@@ -947,3 +947,46 @@ def test_conflict_reply_says_when_the_day_is_full(sqlite_engine):
     assert "already has an appointment" in answer
     assert "No free slots left that day." in answer
     assert "Free slots that day" not in answer
+
+
+def test_losing_a_booking_race_replies_clearly(sqlite_engine, monkeypatch):
+    """The confirmation turn lost the slot to another writer.
+
+    ``book_appointment`` raises SlotTakenError; the node must answer with the
+    usual availability text (or a clear "just booked" fallback), not crash.
+    """
+    from datetime import date, timedelta
+
+    from sqlmodel import Session
+
+    from app.agent.tools import booking_tool
+    from app.crud import SlotTakenError, create_conversation
+    from app.schema import Patient
+
+    _seed_doctor(sqlite_engine)  # tomorrow 09:00-17:00
+    tomorrow = date.today() + timedelta(days=1)
+
+    with Session(sqlite_engine) as session:
+        session.add(Patient(name="Test User", phone="", user_id=1))
+        conversation = create_conversation(session, 1, "booking")
+        conversation_id = conversation.id
+
+    first = booking_tool.run_booking(
+        "book with Dr. Sarah tomorrow at 11am",
+        user=_user(),
+        conversation_id=conversation_id,
+    )
+    assert "Please confirm" in first
+
+    def lost_race(*args, **kwargs):
+        raise SlotTakenError()
+
+    monkeypatch.setattr(booking_tool, "book_appointment", lost_race)
+
+    answer = booking_tool.run_booking(
+        "yes",
+        user=_user(),
+        conversation_id=conversation_id,
+    )
+
+    assert "just booked" in answer

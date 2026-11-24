@@ -324,6 +324,61 @@ def test_double_booking_the_same_slot_conflicts(client):
     assert http.post("/appointments", json=slot, headers=headers).status_code == 409
 
 
+def test_losing_a_booking_race_returns_409_not_500(client, monkeypatch):
+    """check_slot() passed, but another request won the write.
+
+    The route must translate SlotTakenError into a 409 with a readable
+    reason — never a 500 from an unhandled IntegrityError.
+    """
+    from app import appointment_routes
+    from app.crud import SlotTakenError
+
+    http, data, _engine = client
+
+    def lost_race(*args, **kwargs):
+        raise SlotTakenError()
+
+    monkeypatch.setattr(appointment_routes, "book_appointment", lost_race)
+
+    response = http.post(
+        "/appointments",
+        json={
+            "doctor_id": data["doctor_a"].id,
+            "appointment_date": str(MONDAY),
+            "start_time": "10:00",
+        },
+        headers=_auth(data["users"]["patient"]),
+    )
+
+    assert response.status_code == 409
+    assert "just booked" in response.json()["detail"]
+
+
+def test_admin_update_losing_a_race_returns_409(client, monkeypatch):
+    """The admin move path takes the same guard and the same 409."""
+    from app import appointment_routes
+    from app.crud import SlotTakenError
+
+    http, data, engine = client
+    existing = _make_appointment(
+        engine, data["doctor_a"].id, data["patient_a"].id, start_hour=10
+    )
+
+    def lost_race(*args, **kwargs):
+        raise SlotTakenError()
+
+    monkeypatch.setattr(appointment_routes, "update_appointment", lost_race)
+
+    response = http.patch(
+        f"/admin/appointments/{existing.id}",
+        json={"start_time": "11:00"},
+        headers=_auth(data["users"]["admin"]),
+    )
+
+    assert response.status_code == 409
+    assert "just booked" in response.json()["detail"]
+
+
 def test_booking_an_unknown_doctor_is_404(client):
     http, _data, _engine = client
 

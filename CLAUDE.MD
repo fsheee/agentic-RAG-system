@@ -90,6 +90,7 @@ State (`agent/state.py`) carries `question, search_query, route, answer, sources
 - **Date/time parsing is strict on purpose**: bare numbers are never times (need `am`/`pm`, `hh:mm`, or an "at"-hour) and never appointment ids (id regex is anchored, rejects ordinals). `31 February` → `None` → asks again.
 - **Grounding is rag-route only**, and only when documents were retrieved. It costs an extra LLM call per grounded turn (up to three per turn with history, uncached).
 - **`check_slot()` is the single availability rule** shared by the agent workflow, reschedules, and `POST /appointments`. It has no calendar check — past dates are still bookable (known, deliberately deferred).
+- **Booking writes are race-safe**: `book_appointment` / `reschedule_appointment` / `update_appointment` lock the doctor row (`FOR UPDATE`), re-check overlap inside the lock, and raise `SlotTakenError` (mapped to 409 / a chat reply) rather than letting an `IntegrityError` become a 500. The partial unique index `unique_doctor_booking` is the last resort.
 - **The `/ask` log line never includes the question text.** Keep it that way.
 - Rate limiting is in-process, keyed on the socket address; `X-Forwarded-For` is deliberately not trusted. On Vercel serverless it is per-instance, so it only damps abuse — never treat it as a quota.
 
