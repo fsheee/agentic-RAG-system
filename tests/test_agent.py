@@ -157,6 +157,38 @@ def test_database_route_answers_fee_questions(monkeypatch):
     assert state["sources"] == []
 
 
+def test_fee_question_narrows_to_named_specialty(monkeypatch):
+    """'the fee for a dermatologist' names no doctor, but it does name a
+    specialty: answering with every doctor's fee buries the one asked for."""
+    _patch(monkeypatch, "database")
+    monkeypatch.setattr(
+        graph.db_tool,
+        "get_consultation_fees",
+        lambda doctor_id=None: [
+            {
+                "id": 1,
+                "name": "Dr. Sarah Ahmed",
+                "specialization": "Cardiology",
+                "consultation_fee": 3000,
+            },
+            {
+                "id": 2,
+                "name": "Dr. Bilal Raza",
+                "specialization": "Dermatology",
+                "consultation_fee": 2500,
+            },
+        ],
+    )
+
+    state = run_agent("What is the consultation fee for a dermatologist?")
+
+    assert state["route"] == "database"
+    assert "Consultation fees for Dermatology:" in state["answer"]
+    assert "Dr. Bilal Raza (Dermatology): PKR 2500" in state["answer"]
+    assert "Dr. Sarah Ahmed" not in state["answer"]
+    assert state["sources"] == []
+
+
 def test_fee_question_resolves_doctor_from_history(monkeypatch, sqlite_engine):
     """'what her fee' names nobody: the subject comes from the turn that
     listed the doctor, so the answer is her fee, not the whole table."""

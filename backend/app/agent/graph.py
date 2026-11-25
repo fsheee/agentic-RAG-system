@@ -341,23 +341,27 @@ def _fees_answer(state: AgentState) -> dict:
     resolved_question = state.get("search_query") or state["question"]
     doctor = db_tool.named_doctor(resolved_question) or db_tool.referenced_doctor(
         state.get("history")
+    )
 
-    )
-    
-    fees = (
-        db_tool.get_consultation_fees(doctor["id"])
-        if doctor is not None
-        else db_tool.get_consultation_fees()
-    )
+    if doctor is not None:
+        fees = db_tool.get_consultation_fees(doctor["id"])
+        header = f"Consultation fee for {doctor['name']}:"
+    else:
+        fees = db_tool.get_consultation_fees()
+
+        # A specialty names no doctor, but it does narrow the table:
+        # "the fee for a dermatologist" must not answer with every
+        # doctor's fee. Only a specialty some doctor holds matches, so an
+        # unrecognised word still falls through to the full list.
+        by_specialty = db_tool.find_by_specialization(resolved_question, fees)
+        if by_specialty is not None:
+            fees, specializations = by_specialty
+            header = f"Consultation fees for {', '.join(specializations)}:"
+        else:
+            header = "Consultation fees:"
 
     if not fees:
         return {"answer": "No doctors are currently registered.", "sources": []}
-
-    header = (
-        f"Consultation fee for {doctor['name']}:"
-        if doctor is not None
-        else "Consultation fees:"
-    )
 
     lines = []
     for fee in fees:
