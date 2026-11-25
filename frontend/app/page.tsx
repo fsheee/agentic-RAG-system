@@ -38,11 +38,11 @@ const STAFF_ROLES: readonly Role[] = ["doctor", "employee", "hr", "admin"];
 
 const SUGGESTIONS: Suggestion[] = [
   { label: "Hospital Information", question: "What are the hospital visiting hours?" },
-  { label: "Doctors & Services", question: "Which doctors are available for dermatology?" },
+  { label: "Doctors & Services", question: "Which doctors are available for General medicine?" },
   { label: "Consultation Fees", question: "What is the consultation fee for a dermatologist?" },
   {
     label: "Appointments",
-    question: "Book an appointment with Dr. Bilal Raza.",
+    question: "Book an appointment with Dr. Sarah Ahmed.",
     roles: APPOINTMENT_ROLES,
     badge: "Patients & admins",
     restricted: "Only patients and administrators can book appointments.",
